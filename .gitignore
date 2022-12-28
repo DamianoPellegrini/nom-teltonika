@@ -1,0 +1,12 @@
+# MacOS files
+.DS_Store
+
+# Test files
+*.bin
+!test.bin
+
+# Build artifacts
+/target
+
+# Cargo artifacts
+Cargo.lock
