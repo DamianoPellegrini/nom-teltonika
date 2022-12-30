@@ -1,36 +1,65 @@
-# argo-rs
+# nom-teltonika, easily parse the teltonika protocol
 
-Teltonika parser using nom written in Rust.
+This package makes use of the [nom crate](https://crates.io/crates/nom) to parse the binary packets.
 
-The name comes from the greek giant `Αργος Πανοπτης` which translates to `Argo the all-seeing`.
-
-This package makes use of the [nom](https://crates.io/crates/nom) crate to parse the binary packets.
+Further documentation about the `nom crate` can be found at the [docs.rs page](https://docs.rs/nom)
+and at the [official github page](https://github.com/rust-bakery/nom).
 
 ## Features
 
-- [x] IMEI parsing
-- [x] Packet parsing
-- [ ] Error handling
-- [ ] UDP Packet parsing
-- [ ] GPRS Protocol parsing
+It parses Codec 8, 8-Extended and 16 aka (TCP/UDP Protocol).
 
-## Usage
+It **DOES NOT** parse Codec 12, 13 and 14 (aka GPRS Protocol).
 
-Add this to your `Cargo.toml`:
+It fails parsing if any of the following checks fail:
 
-```toml
-[dependencies]
-argo = "0.0.1"
-```
+- Preamble **MUST BE** 0x00000000
+- CRCs **DOES NOT** match
+- Record Counts **DOES NOT** match
+- UDP Un-usable byte **MUST BE** 0x01
 
-and then:
+## Example
+
+### Imei parsing
 
 ```rust
-use argo::{imei, packet};
+let imei_buffer = [0x00, 0x0F, 0x33, 0x35,
+                   0x36, 0x33, 0x30, 0x37,
+                   0x30, 0x34, 0x32, 0x34,
+                   0x34, 0x31, 0x30, 0x31,
+                   0x33
+                   ];
 
-// Parse an IMEI from a byte slice, consists of length and IMEI
-let (_, imei) = imei(&buffer).unwrap();
+let (rest, imei) = nom_teltonika::parser::imei(&imei_buffer).unwrap();
 
-// Parse a packet from a byte slice
-let (_, packet) = packet(&buffer).unwrap();
+assert_eq!(rest, &[]);
+assert_eq!(imei, String::from("356307042441013"));
+```
+
+### Tcp Packet parsing
+
+```rust
+let buffer = [0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x36,
+              0x08, 0x01, 0x00, 0x00,
+              0x01, 0x6B, 0x40, 0xD8,
+              0xEA, 0x30, 0x01, 0x00,
+              0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x01, 0x05,
+              0x02, 0x15, 0x03, 0x01,
+              0x01, 0x01, 0x42, 0x5E,
+              0x0F, 0x01, 0xF1, 0x00,
+              0x00, 0x60, 0x1A, 0x01,
+              0x4E, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00,
+              0x00, 0x01, 0x00, 0x00,
+              0xC7, 0xCF
+              ];
+
+let (rest, packet) = nom_teltonika::parser::tcp_packet(&buffer).unwrap();
+
+assert_eq!(rest, &[]);
+println!("{packet:#?}");
 ```

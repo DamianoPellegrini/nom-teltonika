@@ -1,19 +1,19 @@
-use core::panic;
-
 use chrono::{TimeZone, Utc};
 use nom::{
+    bytes::complete::tag,
     character::complete::anychar,
-    combinator::cond,
+    combinator::{cond, verify},
     error::ParseError,
-    multi::{count, length_count},
+    multi::{length_count, length_data},
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     IResult, Parser,
 };
 
-use crate::{
-    AVLEventIO, AVLEventIOValue, AVLRecord, AVLTCPPacket, Codec, GenerationType, Priority,
-};
+use crate::protocol::*;
 
+/// Parse an imei
+///
+/// Following the teltonika protocol, takes a `&[u8]`: [`u16`] as `length` and `length` bytes as [`String`]
 pub fn imei(input: &[u8]) -> IResult<&[u8], String> {
     let (input, imei) = length_count(be_u16, anychar)(input)?;
     Ok((input, imei.iter().collect()))
@@ -29,7 +29,7 @@ fn priority(input: &[u8]) -> IResult<&[u8], Priority> {
     Ok((input, priority.into()))
 }
 
-fn generation_type(input: &[u8]) -> IResult<&[u8], GenerationType> {
+fn event_generation_cause(input: &[u8]) -> IResult<&[u8], EventGenerationCause> {
     let (input, generation_type) = be_u8(input)?;
     Ok((input, generation_type.into()))
 }
@@ -87,9 +87,9 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         let (input, speed) = be_u16(input)?;
 
         let (input, trigger_event_id) = event_id(codec)(input)?;
-        let (input, generation_type) = cond(codec == Codec::C16, generation_type)(input)?;
+        let (input, generation_type) = cond(codec == Codec::C16, event_generation_cause)(input)?;
 
-        let (input, ios_count) = event_count(codec)(input)?;
+        let (input, _ios_count) = event_count(codec)(input)?;
 
         let (input, u8_ios) = length_count(
             event_count(codec),
@@ -143,9 +143,10 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
             io_events.extend(xb_ios);
         }
 
-        if io_events.len() != ios_count as usize {
-            panic!("wrong count");
-        }
+        // TODO: check that the count is correct using a nom parser
+        // if io_events.len() != _ios_count as usize {
+        //     panic!("wrong count");
+        // }
 
         // contruct a datetime using the timestamp in since the unix epoch
         let datetime = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
@@ -182,36 +183,58 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
     }
 }
 
-pub fn packet(input: &[u8]) -> IResult<&[u8], AVLTCPPacket> {
-    let (input, preamble) = be_u32(input)?;
+/// Parse a tcp packet
+///
+/// It does 3 main error checks:
+/// - Preamble is all zeroes
+/// - Both record counts coincide
+/// - Computes CRC and verifies it against the one sent
+pub fn tcp_packet(input: &[u8]) -> IResult<&[u8], AVLPacket> {
+    let (input, _preamble) = tag("\0\0\0\0")(input)?;
 
-    if preamble != 0x00000000 {
-        panic!("wrong preamble");
-    }
-
-    let (input, data_field_len) = be_u32(input)?;
-    let calculated_crc16 = crate::crc16(&input[0..data_field_len as usize]);
-    let (input, codec) = codec(input)?;
-    let (input, number_of_records) = be_u8(input)?;
-    let (input, records) = count(record(codec), number_of_records as usize)(input)?;
-    let (input, number_of_records_redundancy) = be_u8(input)?;
-    if number_of_records != number_of_records_redundancy {
-        panic!("wrong number of records");
-    }
-    let (input, crc16) = be_u32(input)?;
-
-    if crc16 != calculated_crc16 as u32 {
-        panic!("wrong crc16");
-    }
+    let (input, data) = length_data(be_u32)(input)?;
+    let calculated_crc16 = crate::crc16(data);
+    let (data, codec) = codec(data)?;
+    let (data, records) = length_count(be_u8, record(codec))(data)?;
+    let (_data, _records_count) = verify(be_u8, |number_of_records| {
+        *number_of_records as usize == records.len()
+    })(data)?;
+    let (input, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(input)?;
 
     Ok((
         input,
-        AVLTCPPacket {
-            preamble,
-            data_field_len,
+        AVLPacket {
             codec,
             records,
             crc16,
+        },
+    ))
+}
+
+/// Parse an udp datagram
+///
+/// It checks the record counts coincide
+pub fn udp_datagram(input: &[u8]) -> IResult<&[u8], AVLDatagram> {
+    let (input, packet) = length_data(be_u16)(input)?;
+    let (packet, packet_id) = be_u16(packet)?;
+    // Non-usable byte
+    let (packet, _) = tag("\x01")(packet)?;
+    let (packet, avl_packet_id) = be_u8(packet)?;
+    let (packet, imei) = imei(packet)?;
+    let (packet, codec) = codec(packet)?;
+    let (packet, records) = length_count(be_u8, record(codec))(packet)?;
+    let (_packet, _records_count) = verify(be_u8, |number_of_records| {
+        *number_of_records as usize == records.len()
+    })(packet)?;
+
+    Ok((
+        input,
+        AVLDatagram {
+            packet_id,
+            avl_packet_id,
+            imei,
+            codec,
+            records,
         },
     ))
 }
@@ -291,13 +314,11 @@ mod tests {
     #[test]
     fn parse_packet_codec8_1() {
         let input = hex::decode("000000000000003608010000016B40D8EA30010000000000000000000000000000000105021503010101425E0F01F10000601A014E0000000000000000010000C7CF").unwrap();
-        let (input, packet) = packet(&input).unwrap();
+        let (input, packet) = tcp_packet(&input).unwrap();
         assert_eq!(input, &[]);
         assert_eq!(
             packet,
-            AVLTCPPacket {
-                preamble: 0,
-                data_field_len: 54,
+            AVLPacket {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
                     datetime: "2019-06-10T10:04:46Z".parse().unwrap(),
@@ -341,13 +362,11 @@ mod tests {
     #[test]
     fn parse_packet_codec8_2() {
         let input = hex::decode("000000000000002808010000016B40D9AD80010000000000000000000000000000000103021503010101425E100000010000F22A").unwrap();
-        let (input, packet) = packet(&input).unwrap();
+        let (input, packet) = tcp_packet(&input).unwrap();
         assert_eq!(input, &[]);
         assert_eq!(
             packet,
-            AVLTCPPacket {
-                preamble: 0,
-                data_field_len: 40,
+            AVLPacket {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
                     datetime: "2019-06-10T10:05:36Z".parse().unwrap(),
@@ -383,13 +402,11 @@ mod tests {
     #[test]
     fn parse_packet_codec8_3() {
         let input = hex::decode("000000000000004308020000016B40D57B480100000000000000000000000000000001010101000000000000016B40D5C198010000000000000000000000000000000101010101000000020000252C").unwrap();
-        let (input, packet) = packet(&input).unwrap();
+        let (input, packet) = tcp_packet(&input).unwrap();
         assert_eq!(input, &[]);
         assert_eq!(
             packet,
-            AVLTCPPacket {
-                preamble: 0,
-                data_field_len: 67,
+            AVLPacket {
                 codec: Codec::C8,
                 records: vec![
                     AVLRecord {
@@ -433,13 +450,11 @@ mod tests {
     #[test]
     fn parse_packet_codec8ext() {
         let input = hex::decode("000000000000004A8E010000016B412CEE000100000000000000000000000000000000010005000100010100010011001D00010010015E2C880002000B000000003544C87A000E000000001DD7E06A00000100002994").unwrap();
-        let (input, packet) = packet(&input).unwrap();
+        let (input, packet) = tcp_packet(&input).unwrap();
         assert_eq!(input, &[]);
         assert_eq!(
             packet,
-            AVLTCPPacket {
-                preamble: 0,
-                data_field_len: 74,
+            AVLPacket {
                 codec: Codec::C8Ext,
                 records: vec![AVLRecord {
                     datetime: "2019-06-10T11:36:32Z".parse().unwrap(),
@@ -483,13 +498,11 @@ mod tests {
     #[test]
     fn parse_packet_codec16() {
         let input = hex::decode("000000000000005F10020000016BDBC7833000000000000000000000000000000000000B05040200010000030002000B00270042563A00000000016BDBC7871800000000000000000000000000000000000B05040200010000030002000B00260042563A00000200005FB3").unwrap();
-        let (input, packet) = packet(&input).unwrap();
+        let (input, packet) = tcp_packet(&input).unwrap();
         assert_eq!(input, &[]);
         assert_eq!(
             packet,
-            AVLTCPPacket {
-                preamble: 0,
-                data_field_len: 95,
+            AVLPacket {
                 codec: Codec::C16,
                 records: vec![
                     AVLRecord {
@@ -502,7 +515,7 @@ mod tests {
                         satellites: 0,
                         speed: 0,
                         trigger_event_id: 11,
-                        generation_type: Some(GenerationType::OnChange),
+                        generation_type: Some(EventGenerationCause::OnChange),
                         io_events: vec![
                             AVLEventIO {
                                 id: 1,
@@ -532,7 +545,7 @@ mod tests {
                         satellites: 0,
                         speed: 0,
                         trigger_event_id: 11,
-                        generation_type: Some(GenerationType::OnChange),
+                        generation_type: Some(EventGenerationCause::OnChange),
                         io_events: vec![
                             AVLEventIO {
                                 id: 1,
@@ -556,5 +569,50 @@ mod tests {
                 crc16: 24499
             }
         );
+    }
+
+    #[test]
+    fn parse_udp_datagram() {
+        let input = hex::decode("003DCAFE0105000F33353230393330383634303336353508010000016B4F815B30010000000000000000000000000000000103021503010101425DBC000001").unwrap();
+        let (input, datagram) = udp_datagram(&input).unwrap();
+        assert_eq!(input, &[]);
+        assert_eq!(
+            datagram,
+            AVLDatagram {
+                packet_id: 0xCAFE,
+                avl_packet_id: 0x05,
+                imei: String::from("\x33\x35\x32\x30\x39\x33\x30\x38\x36\x34\x30\x33\x36\x35\x35"),
+                codec: Codec::C8,
+                records: vec![
+                    AVLRecord {
+                        datetime: "2019-06-13T06:23:26Z".parse().unwrap(),
+                        priority: Priority::High,
+                        longitude: 0.0,
+                        latitude: 0.0,
+                        altitude: 0,
+                        angle: 0,
+                        satellites: 0,
+                        speed: 0,
+                        trigger_event_id: 0x01,
+                        generation_type: None,
+                        io_events: vec![
+                            AVLEventIO {
+                                id: 0x15,
+                                value: AVLEventIOValue::U8(0x03)
+                            },
+                            AVLEventIO {
+                                id: 0x01,
+                                value: AVLEventIOValue::U8(0x01)
+                            },
+                            AVLEventIO {
+                                id: 0x42,
+                                value: AVLEventIOValue::U16(0x5DBC)
+                            },
+
+                        ]
+                    }
+                ],
+            }
+        )
     }
 }

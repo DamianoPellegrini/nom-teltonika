@@ -1,20 +1,18 @@
 use std::{fs::File, io::Read};
 
-use argo::*;
+use nom_teltonika::*;
 
 #[test]
-fn parse_dump() {
-    // Load dump.bin
+fn parse_file() {
+    // Load test.bin
     let mut file = File::open("tests/test.bin").unwrap();
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap();
-    // Parse dump.bin
-    let (_, packet) = packet(&buffer).unwrap();
+    // Parse test.bin
+    let (_, packet) = parser::tcp_packet(&buffer).unwrap();
     assert_eq!(
         packet,
-        AVLTCPPacket {
-            preamble: 0,
-            data_field_len: 459,
+        AVLPacket {
             codec: Codec::C8Ext,
             records: vec![
                 AVLRecord {
