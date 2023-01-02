@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.0...v0.1.1) (2023-01-02)
+
+
+### Features
+
+* added serde feature ([edbf25e](https://github.com/DamianoPellegrini/nom-teltonika/commit/edbf25e1c834064decb1518454622a27b320f5be))
+
 ## 0.1.0 (2023-01-02)
 
 
