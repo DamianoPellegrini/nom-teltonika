@@ -1,0 +1,35 @@
+name: Test and release
+on:
+  push:
+    branches: [main]
+jobs:
+
+  # Test code
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{matrix.os}}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --tests --all-features --verbose
+
+  # Create changelog and release pr
+  # when pr is merged and gh release is created publish to cargo
+  release:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/release-please-action@v3
+        id: release
+        with:
+          release-type: rust
+          package-name: nom-teltonika
+          bump-minor-pre-major: true
+          bump-patch-for-minor-pre-major: true
