@@ -149,16 +149,16 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         // }
 
         // contruct a datetime using the timestamp in since the unix epoch
-        let datetime = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
+        let timestamp = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
 
         let longitude = if longitude & 0x80000000 != 0 {
-            longitude as i32 * -1
+            -(longitude as i32)
         } else {
             longitude as i32
         } as f64
             / 10000000.0;
         let latitude = if latitude & 0x80000000 != 0 {
-            latitude as i32 * -1
+            -(latitude as i32)
         } else {
             latitude as i32
         } as f64
@@ -167,7 +167,7 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         Ok((
             input,
             AVLRecord {
-                datetime: datetime,
+                timestamp,
                 priority,
                 longitude,
                 latitude,
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(
             record,
             AVLRecord {
-                datetime: "2019-06-10T10:04:46Z".parse().unwrap(),
+                timestamp: "2019-06-10T10:04:46Z".parse().unwrap(),
                 priority: Priority::High,
                 longitude: 0.0,
                 latitude: 0.0,
@@ -321,7 +321,7 @@ mod tests {
             AVLPacket {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
-                    datetime: "2019-06-10T10:04:46Z".parse().unwrap(),
+                    timestamp: "2019-06-10T10:04:46Z".parse().unwrap(),
                     priority: Priority::High,
                     longitude: 0.0,
                     latitude: 0.0,
@@ -369,7 +369,7 @@ mod tests {
             AVLPacket {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
-                    datetime: "2019-06-10T10:05:36Z".parse().unwrap(),
+                    timestamp: "2019-06-10T10:05:36Z".parse().unwrap(),
                     priority: Priority::High,
                     longitude: 0.0,
                     latitude: 0.0,
@@ -410,7 +410,7 @@ mod tests {
                 codec: Codec::C8,
                 records: vec![
                     AVLRecord {
-                        datetime: "2019-06-10T10:01:01Z".parse().unwrap(),
+                        timestamp: "2019-06-10T10:01:01Z".parse().unwrap(),
                         priority: Priority::High,
                         longitude: 0.0,
                         latitude: 0.0,
@@ -426,7 +426,7 @@ mod tests {
                         },],
                     },
                     AVLRecord {
-                        datetime: "2019-06-10T10:01:19Z".parse().unwrap(),
+                        timestamp: "2019-06-10T10:01:19Z".parse().unwrap(),
                         priority: Priority::High,
                         longitude: 0.0,
                         latitude: 0.0,
@@ -457,7 +457,7 @@ mod tests {
             AVLPacket {
                 codec: Codec::C8Ext,
                 records: vec![AVLRecord {
-                    datetime: "2019-06-10T11:36:32Z".parse().unwrap(),
+                    timestamp: "2019-06-10T11:36:32Z".parse().unwrap(),
                     priority: Priority::High,
                     longitude: 0.0,
                     latitude: 0.0,
@@ -506,7 +506,7 @@ mod tests {
                 codec: Codec::C16,
                 records: vec![
                     AVLRecord {
-                        datetime: "2019-07-10T12:06:54Z".parse().unwrap(),
+                        timestamp: "2019-07-10T12:06:54Z".parse().unwrap(),
                         priority: Priority::Low,
                         longitude: 0.0,
                         latitude: 0.0,
@@ -536,7 +536,7 @@ mod tests {
                         ]
                     },
                     AVLRecord {
-                        datetime: "2019-07-10T12:06:55Z".parse().unwrap(),
+                        timestamp: "2019-07-10T12:06:55Z".parse().unwrap(),
                         priority: Priority::Low,
                         longitude: 0.0,
                         latitude: 0.0,
@@ -583,35 +583,32 @@ mod tests {
                 avl_packet_id: 0x05,
                 imei: String::from("\x33\x35\x32\x30\x39\x33\x30\x38\x36\x34\x30\x33\x36\x35\x35"),
                 codec: Codec::C8,
-                records: vec![
-                    AVLRecord {
-                        datetime: "2019-06-13T06:23:26Z".parse().unwrap(),
-                        priority: Priority::High,
-                        longitude: 0.0,
-                        latitude: 0.0,
-                        altitude: 0,
-                        angle: 0,
-                        satellites: 0,
-                        speed: 0,
-                        trigger_event_id: 0x01,
-                        generation_type: None,
-                        io_events: vec![
-                            AVLEventIO {
-                                id: 0x15,
-                                value: AVLEventIOValue::U8(0x03)
-                            },
-                            AVLEventIO {
-                                id: 0x01,
-                                value: AVLEventIOValue::U8(0x01)
-                            },
-                            AVLEventIO {
-                                id: 0x42,
-                                value: AVLEventIOValue::U16(0x5DBC)
-                            },
-
-                        ]
-                    }
-                ],
+                records: vec![AVLRecord {
+                    timestamp: "2019-06-13T06:23:26Z".parse().unwrap(),
+                    priority: Priority::High,
+                    longitude: 0.0,
+                    latitude: 0.0,
+                    altitude: 0,
+                    angle: 0,
+                    satellites: 0,
+                    speed: 0,
+                    trigger_event_id: 0x01,
+                    generation_type: None,
+                    io_events: vec![
+                        AVLEventIO {
+                            id: 0x15,
+                            value: AVLEventIOValue::U8(0x03)
+                        },
+                        AVLEventIO {
+                            id: 0x01,
+                            value: AVLEventIOValue::U8(0x01)
+                        },
+                        AVLEventIO {
+                            id: 0x42,
+                            value: AVLEventIOValue::U16(0x5DBC)
+                        },
+                    ]
+                }],
             }
         )
     }

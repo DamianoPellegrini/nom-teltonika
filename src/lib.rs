@@ -1,11 +1,11 @@
 #![doc = include_str!("../README.md")]
-mod protocol;
 pub mod parser;
+mod protocol;
 
 pub use protocol::*;
 
 /// IBM CRC16 Algorithm
-/// 
+///
 /// Uses 0xA001 polynomial
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;

@@ -16,7 +16,7 @@ fn parse_file() {
             codec: Codec::C8Ext,
             records: vec![
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:01Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:01Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,
@@ -74,7 +74,7 @@ fn parse_file() {
                     ]
                 },
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:06Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:06Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,
@@ -132,7 +132,7 @@ fn parse_file() {
                     ]
                 },
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:11Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:11Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,
@@ -190,7 +190,7 @@ fn parse_file() {
                     ]
                 },
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:16Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:16Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,
@@ -248,7 +248,7 @@ fn parse_file() {
                     ]
                 },
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:21Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:21Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,
@@ -306,7 +306,7 @@ fn parse_file() {
                     ]
                 },
                 AVLRecord {
-                    datetime: "2021-06-10T14:08:26Z".parse().unwrap(),
+                    timestamp: "2021-06-10T14:08:26Z".parse().unwrap(),
                     priority: Priority::Low,
                     longitude: 12.4534033,
                     latitude: 44.0640849,

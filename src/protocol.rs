@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use nom::Finish;
 
-use crate::parser::{udp_datagram, tcp_packet};
+use crate::parser::{tcp_packet, udp_datagram};
 
 /// Represent the device Codec
-/// 
+///
 /// | TCP/UDP | GPRS |
 /// |---------|------|
 /// | C8      | C12  |
@@ -34,21 +34,21 @@ impl From<u8> for Codec {
     }
 }
 
-impl Into<u8> for Codec {
-    fn into(self) -> u8 {
-        match self {
-            Self::C8 => 0x08,
-            Self::C8Ext => 0x8E,
-            Self::C16 => 0x10,
-            Self::C12 => 0x0C,
-            Self::C13 => 0x0D,
-            Self::C14 => 0x0E,
+impl From<Codec> for u8 {
+    fn from(value: Codec) -> u8 {
+        match value {
+            Codec::C8 => 0x08,
+            Codec::C8Ext => 0x8E,
+            Codec::C16 => 0x10,
+            Codec::C12 => 0x0C,
+            Codec::C13 => 0x0D,
+            Codec::C14 => 0x0E,
         }
     }
 }
 
 /// Record priority
-/// 
+///
 /// Indicates based on configuration how important the record is
 #[derive(Debug, PartialEq)]
 pub enum Priority {
@@ -69,7 +69,7 @@ impl From<u8> for Priority {
 }
 
 /// Event generation
-/// 
+///
 /// Indicates the cause for the event trigger see [`AVLRecord`]
 #[derive(Debug, PartialEq)]
 pub enum EventGenerationCause {
@@ -111,7 +111,7 @@ pub struct AVLDatagram {
 }
 
 impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
-    type Error = nom::error::Error<&'a[u8]>;
+    type Error = nom::error::Error<&'a [u8]>;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         match udp_datagram(value).finish() {
@@ -122,7 +122,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
 }
 
 /// Packet sent by the device
-/// 
+///
 /// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
 #[derive(Debug, PartialEq)]
 pub struct AVLPacket {
@@ -134,7 +134,7 @@ pub struct AVLPacket {
 }
 
 impl<'a> TryFrom<&'a [u8]> for AVLPacket {
-    type Error = nom::error::Error<&'a[u8]>;
+    type Error = nom::error::Error<&'a [u8]>;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         match tcp_packet(value).finish() {
@@ -148,7 +148,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLPacket {
 #[derive(Debug, PartialEq)]
 pub struct AVLRecord {
     /// In Utc Dates
-    pub datetime: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     /// How
     pub priority: Priority,
     pub longitude: f64,
@@ -168,13 +168,15 @@ pub struct AVLRecord {
     pub io_events: Vec<AVLEventIO>,
 }
 
+/// Feature with no enum values io events
+
 /// IO event status
 #[derive(Debug, PartialEq)]
 pub struct AVLEventIO {
     /// Event ID
     pub id: u16,
     /// Raw event value.
-    /// 
+    ///
     /// Should be mapped to the real values using a AVL IO ID List
     pub value: AVLEventIOValue,
 }
