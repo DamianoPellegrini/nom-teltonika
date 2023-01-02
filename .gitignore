@@ -2,8 +2,9 @@
 .DS_Store
 
 # Test files
-*.bin
-!test.bin
+tests/*.bin
+!tests/test.bin
+tests/*.json
 
 # Build artifacts
 /target

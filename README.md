@@ -15,7 +15,7 @@ This package makes use of the [nom crate](https://crates.io/crates/nom) to parse
 Further documentation about the `nom crate` can be found at the [docs.rs page](https://docs.rs/nom)
 and at the [official github page](https://github.com/rust-bakery/nom).
 
-## Features
+## Capabilities
 
 It parses Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
 
@@ -28,7 +28,18 @@ It fails parsing if any of the following checks fail:
 - Record Counts **DOES NOT** match
 - UDP Un-usable byte **MUST BE** 0x01
 
-## Example
+## Features
+
+The following opt-in features are available:
+
+- serde (ser/deser-ialization using the [serde crate](https://docs.rs/serde))
+
+```toml
+[dependencies]
+nom-teltonika = { version = "*", features = ["serde"] }
+```
+
+## Examples
 
 ### Imei parsing
 

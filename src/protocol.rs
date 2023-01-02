@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use nom::Finish;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::parser::{tcp_packet, udp_datagram};
 
 /// Represent the device Codec
@@ -11,6 +14,7 @@ use crate::parser::{tcp_packet, udp_datagram};
 /// | C8Ext   | C13  |
 /// | C16     | C14  |
 #[derive(Debug, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Codec {
     C8,
     C8Ext,
@@ -51,6 +55,7 @@ impl From<Codec> for u8 {
 ///
 /// Indicates based on configuration how important the record is
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Priority {
     Low,
     High,
@@ -72,6 +77,7 @@ impl From<u8> for Priority {
 ///
 /// Indicates the cause for the event trigger see [`AVLRecord`]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum EventGenerationCause {
     None,
     OnExit,
@@ -101,6 +107,7 @@ impl From<u8> for EventGenerationCause {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLDatagram {
     pub packet_id: u16,
     pub avl_packet_id: u8,
@@ -125,6 +132,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
 ///
 /// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLPacket {
     pub codec: Codec,
     /// All the records sent with this packet
@@ -146,6 +154,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLPacket {
 
 /// Location and IO Status inforamtion at a certain point in time
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLRecord {
     /// In Utc Dates
     pub timestamp: DateTime<Utc>,
@@ -172,6 +181,7 @@ pub struct AVLRecord {
 
 /// IO event status
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLEventIO {
     /// Event ID
     pub id: u16,
@@ -182,10 +192,12 @@ pub struct AVLEventIO {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum AVLEventIOValue {
     U8(u8),
     U16(u16),
     U32(u32),
     U64(u64),
+    #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
     Variable(Vec<u8>),
 }
