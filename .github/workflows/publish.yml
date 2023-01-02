@@ -12,4 +12,4 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: publish
-          args: --dry-run --token ${{ secrets.CARGO_TOKEN }}
+          args: --token ${{ secrets.CARGO_TOKEN }}
