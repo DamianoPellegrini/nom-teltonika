@@ -1,5 +1,15 @@
 # nom-teltonika, easily parse the teltonika protocol
 
+![crates.io version](https://img.shields.io/crates/v/nom-teltonika?style=flat-square)
+![crates.io recent downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)
+![docs.rs build](https://img.shields.io/docsrs/nom-teltonika?style=flat-square)
+
+![build status](https://img.shields.io/github/actions/workflow/status/DamianoPellegrini/nom-teltonika/test.yml?style=flat-square)
+![ci checks](https://img.shields.io/github/checks-status/DamianoPellegrini/nom-teltonika/main?style=flat-square)
+
+![license badge](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)
+![repo stars](https://img.shields.io/github/stars/DamianoPellegrini/nom-teltonika?style=social)
+
 This package makes use of the [nom crate](https://crates.io/crates/nom) to parse the binary packets.
 
 Further documentation about the `nom crate` can be found at the [docs.rs page](https://docs.rs/nom)
@@ -7,9 +17,9 @@ and at the [official github page](https://github.com/rust-bakery/nom).
 
 ## Features
 
-It parses Codec 8, 8-Extended and 16 aka (TCP/UDP Protocol).
+It parses Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
 
-It **DOES NOT** parse Codec 12, 13 and 14 (aka GPRS Protocol).
+It **DOES NOT** parse Codec 12, 13 and 14 (aka GPRS Protocol), it **MAY** in the future.
 
 It fails parsing if any of the following checks fail:
 

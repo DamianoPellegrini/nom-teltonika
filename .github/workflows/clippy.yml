@@ -1,0 +1,16 @@
+name: Clippy code linting
+on:
+  push:
+    paths:
+      - "**/*.rs"
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.github_token }}
