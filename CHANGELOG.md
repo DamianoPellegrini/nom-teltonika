@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.1...v0.1.2) (2023-01-23)
+
+
+### Bug Fixes
+
+* added ios count verification ([2746b63](https://github.com/DamianoPellegrini/nom-teltonika/commit/2746b633f9eb649d6a752fa2c769f9c5411321df))
+* added traits to models ([3b5148b](https://github.com/DamianoPellegrini/nom-teltonika/commit/3b5148b1fb22574cb493763734f97bd527faab75))
+
 ## [0.1.1](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.0...v0.1.1) (2023-01-02)
 
 
