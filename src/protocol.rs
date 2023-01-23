@@ -54,7 +54,7 @@ impl From<Codec> for u8 {
 /// Record priority
 ///
 /// Indicates based on configuration how important the record is
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Priority {
     Low,
@@ -76,7 +76,7 @@ impl From<u8> for Priority {
 /// Event generation
 ///
 /// Indicates the cause for the event trigger see [`AVLRecord`]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum EventGenerationCause {
     None,
@@ -106,7 +106,7 @@ impl From<u8> for EventGenerationCause {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLDatagram {
     pub packet_id: u16,
@@ -131,7 +131,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
 /// Packet sent by the device
 ///
 /// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLPacket {
     pub codec: Codec,
@@ -153,7 +153,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLPacket {
 }
 
 /// Location and IO Status inforamtion at a certain point in time
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLRecord {
     /// In Utc Dates
@@ -180,7 +180,7 @@ pub struct AVLRecord {
 /// Feature with no enum values io events
 
 /// IO event status
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLEventIO {
     /// Event ID
@@ -191,7 +191,7 @@ pub struct AVLEventIO {
     pub value: AVLEventIOValue,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum AVLEventIOValue {
     U8(u8),

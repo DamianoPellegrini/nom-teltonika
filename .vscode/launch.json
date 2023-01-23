@@ -4,16 +4,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'argo'",
+            "name": "Debug unit tests in library 'nom-teltonika'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=argo"
+                    "--package=nom-teltonika"
                 ],
                 "filter": {
-                    "name": "argo",
+                    "name": "nom-teltonika",
                     "kind": "lib"
                 }
             },
@@ -29,7 +29,7 @@
                     "test",
                     "--no-run",
                     "--test=parser",
-                    "--package=argo"
+                    "--package=nom-teltonika"
                 ],
                 "filter": {
                     "name": "parser",
