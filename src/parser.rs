@@ -74,23 +74,10 @@ where
     }
 }
 
-fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLRecord> {
+fn io_events<'a>(
+    codec: Codec,
+) -> impl Parser<&'a [u8], Vec<AVLEventIO>, nom::error::Error<&'a [u8]>> {
     move |input| {
-        let (input, timestamp) = be_u64(input)?;
-        let (input, priority) = priority(input)?;
-
-        let (input, longitude) = be_u32(input)?;
-        let (input, latitude) = be_u32(input)?;
-        let (input, altitude) = be_u16(input)?;
-        let (input, angle) = be_u16(input)?;
-        let (input, satellites) = be_u8(input)?;
-        let (input, speed) = be_u16(input)?;
-
-        let (input, trigger_event_id) = event_id(codec)(input)?;
-        let (input, generation_type) = cond(codec == Codec::C16, event_generation_cause)(input)?;
-
-        let (input, _ios_count) = event_count(codec)(input)?;
-
         let (input, u8_ios) = length_count(
             event_count(codec),
             event(codec, be_u8).map(|(id, val)| AVLEventIO {
@@ -142,11 +129,29 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         if let Some(xb_ios) = xb_ios {
             io_events.extend(xb_ios);
         }
+        Ok((input, io_events))
+    }
+}
 
-        // TODO: check that the count is correct using a nom parser
-        // if io_events.len() != _ios_count as usize {
-        //     panic!("wrong count");
-        // }
+fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLRecord> {
+    move |input| {
+        let (input, timestamp) = be_u64(input)?;
+        let (input, priority) = priority(input)?;
+
+        let (input, longitude) = be_u32(input)?;
+        let (input, latitude) = be_u32(input)?;
+        let (input, altitude) = be_u16(input)?;
+        let (input, angle) = be_u16(input)?;
+        let (input, satellites) = be_u8(input)?;
+        let (input, speed) = be_u16(input)?;
+
+        let (input, trigger_event_id) = event_id(codec)(input)?;
+        let (input, generation_type) = cond(codec == Codec::C16, event_generation_cause)(input)?;
+
+        let (input, ios_count) = event_count(codec)(input)?;
+        let (input, io_events) = verify(io_events(codec), |events: &Vec<AVLEventIO>| {
+            events.len() as u16 == ios_count
+        })(input)?;
 
         // contruct a datetime using the timestamp in since the unix epoch
         let timestamp = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
