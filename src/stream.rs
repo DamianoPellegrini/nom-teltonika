@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 
-#[cfg(feature = "async")]
+#[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{AVLDatagram, AVLFrame};
@@ -211,7 +211,7 @@ impl<S: Read + Write> TeltonikaStream<S> {
     }
 }
 
-#[cfg(feature = "async")]
+#[cfg(feature = "tokio")]
 impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     /// Reads the IMEI (International Mobile Equipment Identity) from the stream.
     /// Returns the IMEI as a string.
