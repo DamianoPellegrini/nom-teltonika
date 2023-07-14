@@ -9,9 +9,9 @@ fn parse_file() {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap();
     // Parse test.bin
-    let (_, packet) = parser::tcp_frame(&buffer).unwrap();
+    let (_, frame) = parser::tcp_frame(&buffer).unwrap();
     assert_eq!(
-        packet,
+        frame,
         AVLFrame {
             codec: Codec::C8Ext,
             records: vec![

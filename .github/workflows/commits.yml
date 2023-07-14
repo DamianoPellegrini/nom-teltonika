@@ -1,11 +1,13 @@
-name: Commits linting
+name: Commits linter
 on: push
 jobs:
   commitlint:
-    name: Commitlint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: wagoid/commitlint-github-action@v5
+      # - uses: wagoid/commitlint-github-action@v5
+      #   with:
+      #     configFile: './.commitlintrc.yml'
+      - uses: ahmadnassri/action-commit-lint@v2
         with:
-          configFile: './.commitlintrc.yml'
+          config: './.commitlintrc.yml'

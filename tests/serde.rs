@@ -13,7 +13,7 @@ fn parse_file() {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).expect("Can't read bin file");
     // Parse test.bin
-    let (_, packet) = parser::tcp_frame(&buffer).expect("Can't parse packet");
+    let (_, frame) = parser::tcp_frame(&buffer).expect("Can't parse frame");
     let writer = BufWriter::new(File::create("tests/test.json").expect("Can't create json file"));
-    serde_json::to_writer_pretty(writer, &packet).expect("Can't serialize packet to json");
+    serde_json::to_writer_pretty(writer, &frame).expect("Can't serialize frame to json");
 }

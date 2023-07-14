@@ -117,7 +117,7 @@ pub struct AVLDatagram {
     pub avl_packet_id: u8,
     pub imei: String,
     pub codec: Codec,
-    /// All the records sent with this packet
+    /// All the records sent with this datagram
     pub records: Vec<AVLRecord>,
 }
 
@@ -144,7 +144,7 @@ pub type AVLPacket = AVLFrame;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLFrame {
     pub codec: Codec,
-    /// All the records sent with this packet
+    /// All the records sent with this frame
     pub records: Vec<AVLRecord>,
     /// CRC16 Calculated using [IBM/CRC16][super::crc16] algorithm and 0xA001 polynomial
     pub crc16: u32,
@@ -155,7 +155,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLFrame {
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         match tcp_frame(value) {
-            Ok((_, packet)) => Ok(packet),
+            Ok((_, frame)) => Ok(frame),
             Err(e) => Err(e),
         }
     }
