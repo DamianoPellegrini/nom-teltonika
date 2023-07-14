@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.2...v0.1.3) (2023-07-14)
+
+
+### Features
+
+* added stream wrapper, streaming parsing ([29e26bf](https://github.com/DamianoPellegrini/nom-teltonika/commit/29e26bfbe3be594529913893ce138cdbc0226a6e))
+* async feature using tokio ([49af519](https://github.com/DamianoPellegrini/nom-teltonika/commit/49af51901c168553c46b044b65f881141888276f))
+
+
+### Bug Fixes
+
+* :arrow_up: solved security audit for chrono ([5332d3c](https://github.com/DamianoPellegrini/nom-teltonika/commit/5332d3c1a35b03c58dc99b37f74b6909128fdb74))
+
 ## [0.1.2](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.1...v0.1.2) (2023-01-23)
 
 
