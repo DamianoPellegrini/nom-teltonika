@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.3...v0.1.4) (2023-07-14)
+
+
+### Bug Fixes
+
+* tokio feature ([dde1098](https://github.com/DamianoPellegrini/nom-teltonika/commit/dde1098fcbd0b05e68d3bb7e56b18b05f303165b))
+
 ## [0.1.3](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.2...v0.1.3) (2023-07-14)
 
 
