@@ -1,0 +1,72 @@
+name: Test and release
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "benches/**"
+      - "README.md" # used by rustdoc, it needs to run test when updated
+jobs:
+
+  # Test code
+  test:
+    name: Test on ${{matrix.os}}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{matrix.os}}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --tests --all-features --verbose
+
+  # Create changelog and release pr
+  # when pr is merged and gh release is created publish to cargo
+  release-pr:
+    name: Release PR Checks
+    needs: [test]
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      patch: ${{ steps.release.outputs.patch }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: google-github-actions/release-please-action@v3
+        id: release
+        with:
+          release-type: rust
+          package-name: nom-teltonika
+          bump-minor-pre-major: true
+          bump-patch-for-minor-pre-major: true
+      - name: Print Release outputs
+        run: |
+          echo "releases_created=${{ steps.release.outputs.releases_created }}"
+          echo "major=${{ steps.release.outputs.major }}"
+          echo "minor=${{ steps.release.outputs.minor }}"
+          echo "patch=${{ steps.release.outputs.patch }}"
+          echo "sha=${{ steps.release.outputs.sha }}"
+
+  publish:
+    name: Publish to crates.io
+    needs: release-pr
+    if: ${{ needs.release-pr.outputs.releases_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: --token ${{ secrets.CARGO_TOKEN }}

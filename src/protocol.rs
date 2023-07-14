@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
-use nom::Finish;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::parser::{tcp_packet, udp_datagram};
+use crate::parser::{tcp_frame, udp_datagram};
 
 /// Represent the device Codec
 ///
@@ -106,10 +105,15 @@ impl From<u8> for EventGenerationCause {
     }
 }
 
+/// UDP Datagram sent by the device
+///
+/// Represent the whole channel information
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLDatagram {
+    /// The udp channel packet id
     pub packet_id: u16,
+    /// The actual id of the AVL packet
     pub avl_packet_id: u8,
     pub imei: String,
     pub codec: Codec,
@@ -118,22 +122,27 @@ pub struct AVLDatagram {
 }
 
 impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
-    type Error = nom::error::Error<&'a [u8]>;
+    type Error = nom::Err<nom::error::Error<&'a [u8]>>;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        match udp_datagram(value).finish() {
+        match udp_datagram(value) {
             Ok((_, datagram)) => Ok(datagram),
             Err(e) => Err(e),
         }
     }
 }
 
-/// Packet sent by the device
+/// # Deprecated
+/// Use [`AVLFrame`] instead
+#[deprecated = "Use AVLFrame instead"]
+pub type AVLPacket = AVLFrame;
+
+/// Frame sent by the device
 ///
 /// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct AVLPacket {
+pub struct AVLFrame {
     pub codec: Codec,
     /// All the records sent with this packet
     pub records: Vec<AVLRecord>,
@@ -141,18 +150,18 @@ pub struct AVLPacket {
     pub crc16: u32,
 }
 
-impl<'a> TryFrom<&'a [u8]> for AVLPacket {
-    type Error = nom::error::Error<&'a [u8]>;
+impl<'a> TryFrom<&'a [u8]> for AVLFrame {
+    type Error = nom::Err<nom::error::Error<&'a [u8]>>;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        match tcp_packet(value).finish() {
+        match tcp_frame(value) {
             Ok((_, packet)) => Ok(packet),
             Err(e) => Err(e),
         }
     }
 }
 
-/// Location and IO Status inforamtion at a certain point in time
+/// Location and IO Status information at a certain point in time
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLRecord {

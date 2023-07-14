@@ -2,6 +2,7 @@ name: Commits linting
 on: push
 jobs:
   commitlint:
+    name: Commitlint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3

@@ -4,22 +4,19 @@
 ![crates.io recent downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)
 ![docs.rs build](https://img.shields.io/docsrs/nom-teltonika?style=flat-square)
 
-![build status](https://img.shields.io/github/actions/workflow/status/DamianoPellegrini/nom-teltonika/test.yml?style=flat-square)
+![build status](https://img.shields.io/github/actions/workflow/status/DamianoPellegrini/nom-teltonika/test_and_release.yml?style=flat-square)
 ![ci checks](https://img.shields.io/github/checks-status/DamianoPellegrini/nom-teltonika/main?style=flat-square)
 
 ![license badge](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)
 ![repo stars](https://img.shields.io/github/stars/DamianoPellegrini/nom-teltonika?style=social)
 
-This package makes use of the [nom crate](https://crates.io/crates/nom) to parse the binary packets.
-
-Further documentation about the `nom crate` can be found at the [docs.rs page](https://docs.rs/nom)
-and at the [official github page](https://github.com/rust-bakery/nom).
+This package makes use of the [nom crate](https://docs.rs/nom) to parse the binary packets.
 
 ## Capabilities
 
 It parses Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
 
-It **DOES NOT** parse Codec 12, 13 and 14 (aka GPRS Protocol), it **MAY** in the future.
+It **DOES NOT** currently parse Codec 12, 13 and 14 (aka GPRS Protocol), it **MAY** does so in the future.
 
 It fails parsing if any of the following checks fail:
 
@@ -29,6 +26,8 @@ It fails parsing if any of the following checks fail:
 - UDP Un-usable byte **MUST BE** 0x01
 
 ## Features
+
+A TcpStream wrapper is provided to easily parse the incoming packets.
 
 The following opt-in features are available:
 

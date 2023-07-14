@@ -1,8 +1,10 @@
 #![doc = include_str!("../README.md")]
 pub mod parser;
 mod protocol;
+mod stream;
 
 pub use protocol::*;
+pub use stream::*;
 
 /// IBM CRC16 Algorithm
 ///
