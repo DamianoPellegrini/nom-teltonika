@@ -5,7 +5,7 @@ use nom::{
     combinator::{cond, verify},
     error::ParseError,
     multi::{length_count, length_data},
-    number::streaming::{be_u16, be_u32, be_u64, be_u8},
+    number::streaming::{be_i32, be_u16, be_u32, be_u64, be_u8},
     IResult, Parser,
 };
 
@@ -138,8 +138,8 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         let (input, timestamp) = be_u64(input)?;
         let (input, priority) = priority(input)?;
 
-        let (input, longitude) = be_u32(input)?;
-        let (input, latitude) = be_u32(input)?;
+        let (input, longitude) = be_i32(input)?;
+        let (input, latitude) = be_i32(input)?;
         let (input, altitude) = be_u16(input)?;
         let (input, angle) = be_u16(input)?;
         let (input, satellites) = be_u8(input)?;
@@ -156,18 +156,20 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         // contruct a datetime using the timestamp in since the unix epoch
         let timestamp = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
 
-        let longitude = if longitude & 0x80000000 != 0 {
-            -(longitude as i32)
-        } else {
-            longitude as i32
-        } as f64
-            / 10000000.0;
-        let latitude = if latitude & 0x80000000 != 0 {
-            -(latitude as i32)
-        } else {
-            latitude as i32
-        } as f64
-            / 10000000.0;
+        // let longitude = if longitude & 0x80000000 != 0 {
+        //     -(longitude as i32)
+        // } else {
+        //     longitude as i32
+        // } as f64
+        //     / 10000000.0;
+        // let latitude = if latitude & 0x80000000 != 0 {
+        //     -(latitude as i32)
+        // } else {
+        //     latitude as i32
+        // } as f64
+        //     / 10000000.0;
+        let longitude = longitude as f64 / 10000000.0;
+        let latitude = latitude as f64 / 10000000.0;
 
         Ok((
             input,
