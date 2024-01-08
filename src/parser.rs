@@ -156,18 +156,6 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
         // contruct a datetime using the timestamp in since the unix epoch
         let timestamp = Utc.timestamp_millis_opt(timestamp as i64).single().unwrap();
 
-        // let longitude = if longitude & 0x80000000 != 0 {
-        //     -(longitude as i32)
-        // } else {
-        //     longitude as i32
-        // } as f64
-        //     / 10000000.0;
-        // let latitude = if latitude & 0x80000000 != 0 {
-        //     -(latitude as i32)
-        // } else {
-        //     latitude as i32
-        // } as f64
-        //     / 10000000.0;
         let longitude = longitude as f64 / 10000000.0;
         let latitude = latitude as f64 / 10000000.0;
 
