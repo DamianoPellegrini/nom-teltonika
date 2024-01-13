@@ -663,4 +663,13 @@ mod tests {
             panic!("Expected Incomplete error");
         }
     }
+
+    #[test]
+    fn parse_negative_emisphere_coordinates() {
+        let input = hex::decode("00000000000000460801000001776D58189001FA0A1F00F1194D80009C009D05000F9B0D06EF01F0001505C80045019B0105B5000BB6000A424257430F8044000002F1000060191000000BE1000100006E2B").unwrap();
+        let (input, frame) = tcp_frame(&input).unwrap();
+        assert_eq!(input, &[]);
+        assert_eq!(frame.records[0].longitude, -10.0);
+        assert_eq!(frame.records[0].latitude, -25.0);
+    }
 }

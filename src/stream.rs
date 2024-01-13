@@ -53,7 +53,7 @@ impl<S: Read + Write> TeltonikaStream<S> {
     ///
     /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
     ///
-    /// If no bytes are read from the stream, an error king of [`std::io::ErrorKind::ConnectionReset`] is returned.
+    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the IMEI cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub fn read_imei(&mut self) -> io::Result<String> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.imei_buf_capacity * 2);
@@ -94,7 +94,7 @@ impl<S: Read + Write> TeltonikaStream<S> {
     ///
     /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
     ///
-    /// If no bytes are read from the stream, an error king of [`std::io::ErrorKind::ConnectionReset`] is returned.
+    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub fn read_frame(&mut self) -> io::Result<AVLFrame> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
@@ -220,7 +220,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     ///
     /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
     ///
-    /// If no bytes are read from the stream, an error king of [`std::io::ErrorKind::ConnectionReset`] is returned.
+    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the IMEI cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub async fn read_imei_async(&mut self) -> io::Result<String> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.imei_buf_capacity * 2);
@@ -261,7 +261,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     ///
     /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
     ///
-    /// If no bytes are read from the stream, an error king of [`std::io::ErrorKind::ConnectionReset`] is returned.
+    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub async fn read_frame_async(&mut self) -> io::Result<AVLFrame> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
