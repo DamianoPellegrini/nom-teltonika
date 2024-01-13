@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.4...v0.1.5) (2024-01-13)
+
+
+### Bug Fixes
+
+* bug when reading gps coordinates in the southern and eastern hemispheres ([8e16afb](https://github.com/DamianoPellegrini/nom-teltonika/commit/8e16afb3491531dfe3c60668d79b4b57bbac319f))
+
 ## [0.1.4](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.3...v0.1.4) (2023-07-14)
 
 
