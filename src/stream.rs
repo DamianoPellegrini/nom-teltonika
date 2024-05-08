@@ -97,10 +97,7 @@ impl<S: Read + Write> TeltonikaStream<S> {
     /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub fn read_frame(&mut self) -> io::Result<AVLFrame> {
-        match self.read_frame_and_bytes() {
-            Ok(o) => Ok(o.0),
-            Err(e) => Err(e),
-        }
+        self.read_frame_and_bytes().map(|(frame, _)| frame)
     }
 
     /// Functions the same a read_frame but also returns the raw bytes read
@@ -272,6 +269,13 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub async fn read_frame_async(&mut self) -> io::Result<AVLFrame> {
+        self.read_frame_and_bytes_async()
+            .await
+            .map(|(frame, _)| frame)
+    }
+
+    /// Functions the same a read_frame but also returns the raw bytes read
+    pub async fn read_frame_and_bytes_async(&mut self) -> io::Result<(AVLFrame, Vec<u8>)> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
 
         // Read bytes until they are enough
@@ -292,7 +296,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
 
             match frame_parser_result {
                 Ok((_, frame)) => {
-                    return Ok(frame);
+                    return Ok((frame, parse_buf));
                 }
                 Err(nom::Err::Incomplete(_)) => {
                     continue;
