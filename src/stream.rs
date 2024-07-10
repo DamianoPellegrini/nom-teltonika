@@ -216,38 +216,9 @@ impl<S: Read + Write> TeltonikaStream<S> {
     }
 
     pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
-        let command = command.as_ref();
-        let command_len = command.len();
+        let command = build_command_codec12(command);
 
-        // preamble
-        self.inner.write_all(&[0; 4])?;
-
-        // data size
-        self.inner
-            .write_all(&(8 + command_len as u32).to_be_bytes())?;
-
-        // codec id
-        self.inner.write_all(&[0x0C])?;
-
-        // command quantity 1
-        self.inner.write_all(&[0x01])?;
-
-        // type
-        self.inner.write_all(&[0x05])?;
-
-        // command size
-        self.inner.write_all(&(command_len as u32).to_be_bytes())?;
-
-        // command
-        self.inner.write_all(command)?;
-
-        // command quantity 2
-        self.inner.write_all(&[0x01])?;
-
-        // crc
-        let crc = crc16(&command[8..]);
-        self.inner.write_all(&(crc as u32).to_be_bytes())?;
-
+        self.inner.write(&command)?;
         self.inner.flush()?;
 
         Ok(())
@@ -442,41 +413,9 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     }
 
     pub async fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
-        let command = command.as_ref();
-        let command_len = command.len();
+        let command = build_command_codec12(command);
 
-        // preamble
-        self.inner.write_all(&[0; 4]).await?;
-
-        // data size
-        self.inner
-            .write_all(&(8 + command_len as u32).to_be_bytes())
-            .await?;
-
-        // codec id
-        self.inner.write_all(&[0x0C]).await?;
-
-        // command quantity 1
-        self.inner.write_all(&[0x01]).await?;
-
-        // type
-        self.inner.write_all(&[0x05]).await?;
-
-        // command size
-        self.inner
-            .write_all(&(command_len as u32).to_be_bytes())
-            .await?;
-
-        // command
-        self.inner.write_all(command).await?;
-
-        // command quantity 2
-        self.inner.write_all(&[0x01]).await?;
-
-        // crc
-        let crc = crc16(&command[8..]);
-        self.inner.write_all(&(crc as u32).to_be_bytes()).await?;
-
+        self.inner.write(command).await?;
         self.inner.flush().await?;
 
         Ok(())
@@ -492,4 +431,42 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
             }
         }
     }
+}
+
+// builds a command to a stream using the codec 12 protocol
+pub fn build_command_codec12(msg: impl AsRef<[u8]>) -> Vec<u8> {
+    let msg = msg.as_ref();
+    let msg_len = msg.len();
+
+    let mut command = Vec::with_capacity(20 + msg_len);
+
+    // preamble
+    command.extend([0; 4]);
+
+    // data size
+    command.extend((8 + msg_len as u32).to_be_bytes());
+
+    // codec id
+    command.push(0x0C);
+
+    // command quantity 1
+    command.push(0x01);
+
+    // type
+    command.push(0x05);
+
+    // command size
+    command.extend((msg_len as u32).to_be_bytes());
+
+    // command
+    command.extend(msg);
+
+    // command quantity 2
+    command.push(0x01);
+
+    // crc
+    let crc = crc16(&command[8..]) as u32;
+    command.extend(crc.to_be_bytes());
+
+    command
 }
