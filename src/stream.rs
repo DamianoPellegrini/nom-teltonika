@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{AVLDatagram, AVLFrame};
+use crate::{crc16, AVLDatagram, AVLFrame};
 
 const DEFAULT_IMEI_BUF_CAPACITY: usize = 128;
 const DEFAULT_PACKET_BUF_CAPACITY: usize = 2048;
@@ -214,6 +214,44 @@ impl<S: Read + Write> TeltonikaStream<S> {
         self.inner.flush()?;
         Ok(())
     }
+
+    pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
+        let command = command.as_ref();
+        let command_len = command.len();
+
+        // preamble
+        self.inner.write_all(&[0; 4])?;
+
+        // data size
+        self.inner
+            .write_all(&(8 + command_len as u32).to_be_bytes())?;
+
+        // codec id
+        self.inner.write_all(&[0x0C])?;
+
+        // command quantity 1
+        self.inner.write_all(&[0x01])?;
+
+        // type
+        self.inner.write_all(&[0x05])?;
+
+        // command size
+        self.inner.write_all(&(command_len as u32).to_be_bytes())?;
+
+        // command
+        self.inner.write_all(command)?;
+
+        // command quantity 2
+        self.inner.write_all(&[0x01])?;
+
+        // crc
+        let crc = crc16(&command[8..]);
+        self.inner.write_all(&(crc as u32).to_be_bytes())?;
+
+        self.inner.flush()?;
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -389,6 +427,47 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         self.inner.write_all(&avl_packet_id.to_be_bytes()).await?;
         self.inner.write_all(&ack.to_be_bytes()).await?;
         self.inner.flush().await?;
+        Ok(())
+    }
+
+    pub fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
+        let command = command.as_ref();
+        let command_len = command.len();
+
+        // preamble
+        self.inner.write_all(&[0; 4]).await?;
+
+        // data size
+        self.inner
+            .write_all(&(8 + command_len as u32).to_be_bytes())
+            .await?;
+
+        // codec id
+        self.inner.write_all(&[0x0C]).await?;
+
+        // command quantity 1
+        self.inner.write_all(&[0x01]).await?;
+
+        // type
+        self.inner.write_all(&[0x05]).await?;
+
+        // command size
+        self.inner
+            .write_all(&(command_len as u32).to_be_bytes())
+            .await?;
+
+        // command
+        self.inner.write_all(command).await?;
+
+        // command quantity 2
+        self.inner.write_all(&[0x01]).await?;
+
+        // crc
+        let crc = crc16(&command[8..]);
+        self.inner.write_all(&(crc as u32).to_be_bytes()).await?;
+
+        self.inner.flush().await?;
+
         Ok(())
     }
 }
