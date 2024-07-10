@@ -252,6 +252,17 @@ impl<S: Read + Write> TeltonikaStream<S> {
 
         Ok(())
     }
+
+    pub fn read_command(&mut self) -> io::Result<Vec<u8>> {
+        let mut revc_buf = vec![0u8; self.packet_buf_capacity];
+        loop {
+            let bytes_read = self.inner.read(&mut revc_buf)?;
+
+            if bytes_read == 0 {
+                return Ok(revc_buf);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -430,7 +441,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         Ok(())
     }
 
-    pub fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
+    pub async fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
         let command = command.as_ref();
         let command_len = command.len();
 
@@ -469,5 +480,16 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         self.inner.flush().await?;
 
         Ok(())
+    }
+
+    pub async fn read_command_async(&mut self) -> io::Result<Vec<u8>> {
+        let mut revc_buf = vec![0u8; self.packet_buf_capacity];
+        loop {
+            let bytes_read = self.inner.read(&mut revc_buf).await?;
+
+            if bytes_read == 0 {
+                return Ok(revc_buf);
+            }
+        }
     }
 }
