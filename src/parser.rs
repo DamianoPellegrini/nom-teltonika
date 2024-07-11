@@ -1,15 +1,50 @@
 use chrono::{TimeZone, Utc};
 use nom::{
-    bytes::streaming::tag,
+    bytes::streaming::{tag, take},
     character::streaming::anychar,
     combinator::{cond, verify},
     error::ParseError,
-    multi::{length_count, length_data},
+    multi::{count, length_count, length_data},
     number::streaming::{be_i32, be_u16, be_u32, be_u64, be_u8},
     IResult, Parser,
 };
 
 use crate::protocol::*;
+
+/// Parse a response from a command
+///
+/// Takes the response from a command and returns the response message
+pub fn command_response(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    // preamble
+    let (remaining, _preamble) = tag([0; 4])(input)?;
+
+    // data size
+    let (remaining, data_size) = be_u32(remaining)?;
+
+    // codec id
+    let (remaining, _codec_id) = tag([0x0C])(remaining)?;
+
+    // response quantity 1
+    let (remaining, _) = take(1usize)(remaining)?;
+
+    // type
+    let (remaining, _codec_id) = tag([0x06])(remaining)?;
+
+    // response size
+    let (remaining, response_size) = be_u32(remaining)?;
+
+    // response
+    let (remaining, response) = take(response_size)(remaining)?;
+
+    // response quantity 2
+    let (remaining, _) = take(1usize)(remaining)?;
+
+    // crc
+    let calculated_crc16 = crate::crc16(&input[8..8 + data_size as usize]);
+    let (remaining, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(input)?;
+
+    Ok((remaining, response))
+}
 
 /// Parse an imei
 ///

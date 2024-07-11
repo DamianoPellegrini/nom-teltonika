@@ -225,12 +225,37 @@ impl<S: Read + Write> TeltonikaStream<S> {
     }
 
     pub fn read_command(&mut self) -> io::Result<Vec<u8>> {
-        let mut revc_buf = vec![0u8; self.packet_buf_capacity];
+        let mut parse_buf: Vec<u8> = Vec::new();
+
+        // Read bytes until they are enough
         loop {
+            let mut revc_buf = Vec::new();
             let bytes_read = self.inner.read(&mut revc_buf)?;
 
             if bytes_read == 0 {
-                return Ok(revc_buf);
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Connection closed",
+                ));
+            }
+
+            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
+
+            let command_parser_result = crate::parser::command_response(&parse_buf[..]);
+
+            match command_parser_result {
+                Ok((_, response)) => {
+                    return Ok(response.into());
+                }
+                Err(nom::Err::Incomplete(_)) => {
+                    continue;
+                }
+                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
+                    ))
+                }
             }
         }
     }
@@ -422,12 +447,33 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     }
 
     pub async fn read_command_async(&mut self) -> io::Result<Vec<u8>> {
-        let mut revc_buf = vec![0u8; self.packet_buf_capacity];
+        let mut parse_buf: Vec<u8> = Vec::new();
+
+        // Read bytes until they are enough
         loop {
-            let bytes_read = self.inner.read(&mut revc_buf).await?;
+            let mut recv_buf = Vec::new();
+            let bytes_read = self.inner.read(&mut recv_buf[..]).await?;
 
             if bytes_read == 0 {
-                return Ok(revc_buf);
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Connection closed",
+                ));
+            }
+
+            parse_buf.extend_from_slice(&recv_buf[..bytes_read]);
+
+            let command_parser_result = crate::parser::command_response(&parse_buf[..]);
+
+            match command_parser_result {
+                Ok((_, response)) => return Ok(response.into()),
+                Err(nom::Err::Incomplete(_)) => continue,
+                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
+                    ))
+                }
             }
         }
     }
