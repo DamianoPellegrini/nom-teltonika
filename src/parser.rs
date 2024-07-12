@@ -4,7 +4,7 @@ use nom::{
     character::streaming::anychar,
     combinator::{cond, verify},
     error::ParseError,
-    multi::{count, length_count, length_data},
+    multi::{length_count, length_data},
     number::streaming::{be_i32, be_u16, be_u32, be_u64, be_u8},
     IResult, Parser,
 };
@@ -41,7 +41,7 @@ pub fn command_response(input: &[u8]) -> IResult<&[u8], &[u8]> {
 
     // crc
     let calculated_crc16 = crate::crc16(&input[8..8 + data_size as usize]);
-    let (remaining, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(remaining)?;
+    let (remaining, _crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(remaining)?;
 
     Ok((remaining, response))
 }
