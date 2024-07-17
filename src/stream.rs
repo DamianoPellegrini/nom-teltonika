@@ -440,6 +440,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     pub async fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
         let command = build_command_codec12(command);
 
+        println!("Command being sent: {:?}", command);
         self.inner.write_all(&command).await?;
         self.inner.flush().await?;
 
