@@ -462,6 +462,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
             }
 
             parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
+            println!("Parse Buf: {:?}", parse_buf);
 
             let command_parser_result = crate::parser::command_response(&parse_buf[..]);
 
@@ -519,4 +520,20 @@ pub fn build_command_codec12(msg: impl AsRef<[u8]>) -> Vec<u8> {
     command.extend(crc.to_be_bytes());
 
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn building_commands() {
+        assert_eq!(
+            build_command_codec12(b"getinfo"),
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x0C, 0x01, 0x05, 0x00, 0x00, 0x00,
+                0x07, 0x67, 0x65, 0x74, 0x69, 0x6E, 0x66, 0x6F, 0x01, 0x00, 0x00, 0x43, 0x12
+            ]
+        );
+    }
 }
