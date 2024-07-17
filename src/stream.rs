@@ -455,12 +455,12 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
             let mut revc_buf = Vec::new();
             let bytes_read = self.inner.read(&mut revc_buf).await?;
 
-            // if bytes_read == 0 {
-            //     return Err(io::Error::new(
-            //         io::ErrorKind::ConnectionReset,
-            //         "Connection closed",
-            //     ));
-            // }
+            if bytes_read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Connection closed",
+                ));
+            }
 
             parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
             println!("Parse Buf: {:?}", parse_buf);
