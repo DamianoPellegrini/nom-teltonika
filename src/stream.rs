@@ -363,6 +363,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         loop {
             let mut revc_buf = vec![0u8; self.packet_buf_capacity];
             let bytes_read = self.inner.read(&mut revc_buf).await?;
+
             println!("Receive buf: {:?}", revc_buf);
             println!("Bytes read: {:?}", bytes_read);
 
