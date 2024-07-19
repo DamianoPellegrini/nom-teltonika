@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{AVLDatagram, AVLFrame};
+use crate::{crc16, AVLDatagram, AVLFrame};
 
 const DEFAULT_IMEI_BUF_CAPACITY: usize = 128;
 const DEFAULT_PACKET_BUF_CAPACITY: usize = 2048;
@@ -97,6 +97,11 @@ impl<S: Read + Write> TeltonikaStream<S> {
     /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub fn read_frame(&mut self) -> io::Result<AVLFrame> {
+        self.read_frame_and_bytes().map(|(frame, _)| frame)
+    }
+
+    /// Functions the same a read_frame but also returns the raw bytes read
+    pub fn read_frame_and_bytes(&mut self) -> io::Result<(AVLFrame, Vec<u8>)> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
 
         // Read bytes until they are enough
@@ -117,7 +122,7 @@ impl<S: Read + Write> TeltonikaStream<S> {
 
             match frame_parser_result {
                 Ok((_, frame)) => {
-                    return Ok(frame);
+                    return Ok((frame, parse_buf));
                 }
                 Err(nom::Err::Incomplete(_)) => {
                     continue;
@@ -209,6 +214,51 @@ impl<S: Read + Write> TeltonikaStream<S> {
         self.inner.flush()?;
         Ok(())
     }
+
+    pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
+        let command = build_command_codec12(command);
+
+        self.inner.write_all(&command)?;
+        self.inner.flush()?;
+
+        Ok(())
+    }
+
+    pub fn read_command(&mut self) -> io::Result<Vec<u8>> {
+        let mut parse_buf: Vec<u8> = Vec::new();
+
+        // Read bytes until they are enough
+        loop {
+            let mut revc_buf = Vec::new();
+            let bytes_read = self.inner.read(&mut revc_buf)?;
+
+            if bytes_read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Connection closed",
+                ));
+            }
+
+            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
+
+            let command_parser_result = crate::parser::command_response(&parse_buf[..]);
+
+            match command_parser_result {
+                Ok((_, command)) => {
+                    return Ok(command.into());
+                }
+                Err(nom::Err::Incomplete(_)) => {
+                    continue;
+                }
+                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
+                    ))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -264,6 +314,13 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
     /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
     pub async fn read_frame_async(&mut self) -> io::Result<AVLFrame> {
+        self.read_frame_and_bytes_async()
+            .await
+            .map(|(frame, _)| frame)
+    }
+
+    /// Functions the same a read_frame but also returns the raw bytes read
+    pub async fn read_frame_and_bytes_async(&mut self) -> io::Result<(AVLFrame, Vec<u8>)> {
         let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
 
         // Read bytes until they are enough
@@ -284,7 +341,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
 
             match frame_parser_result {
                 Ok((_, frame)) => {
-                    return Ok(frame);
+                    return Ok((frame, parse_buf));
                 }
                 Err(nom::Err::Incomplete(_)) => {
                     continue;
@@ -378,5 +435,109 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         self.inner.write_all(&ack.to_be_bytes()).await?;
         self.inner.flush().await?;
         Ok(())
+    }
+
+    pub async fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
+        let command = build_command_codec12(command);
+
+        self.inner.write_all(&command).await?;
+        self.inner.flush().await?;
+
+        Ok(())
+    }
+
+    pub async fn read_command_async(&mut self) -> io::Result<Vec<u8>> {
+        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
+
+        // Read bytes until they are enough
+        loop {
+            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
+            let bytes_read = self.inner.read(&mut revc_buf).await?;
+
+            if bytes_read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Connection closed",
+                ));
+            }
+
+            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
+
+            let command_parser_result = crate::parser::command_response(&parse_buf[..]);
+
+            match command_parser_result {
+                Ok((_, command)) => {
+                    return Ok(command.into());
+                }
+                Err(nom::Err::Incomplete(_)) => {
+                    continue;
+                }
+                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
+                    ))
+                }
+            }
+        }
+    }
+}
+
+// builds a command to a stream using the codec 12 protocol
+pub fn build_command_codec12(msg: impl AsRef<[u8]>) -> Vec<u8> {
+    let msg = msg.as_ref();
+    let msg_len = msg.len();
+
+    let mut command = Vec::with_capacity(20 + msg_len);
+
+    // preamble
+    command.extend([0; 4]);
+
+    // data size
+    command.extend((8 + msg_len as u32).to_be_bytes());
+
+    // codec id
+    command.extend(&0x0Cu8.to_be_bytes());
+
+    // command quantity 1
+    command.extend(0x01u8.to_be_bytes());
+
+    // type
+    command.extend(0x05u8.to_be_bytes());
+
+    // command size
+    command.extend((msg_len as u32).to_be_bytes());
+
+    // command
+    command.extend(
+        msg.iter()
+            .map(|byte| byte.to_be_bytes())
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+
+    // command quantity 2
+    command.extend(&0x01u8.to_be_bytes());
+
+    // crc
+    let crc = crc16(&command[8..]) as u32;
+    command.extend(crc.to_be_bytes());
+
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn building_commands() {
+        assert_eq!(
+            build_command_codec12(b"getinfo"),
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x0C, 0x01, 0x05, 0x00, 0x00, 0x00,
+                0x07, 0x67, 0x65, 0x74, 0x69, 0x6E, 0x66, 0x6F, 0x01, 0x00, 0x00, 0x43, 0x12
+            ]
+        );
     }
 }
