@@ -364,9 +364,6 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
             let mut revc_buf = vec![0u8; self.packet_buf_capacity];
             let bytes_read = self.inner.read(&mut revc_buf).await?;
 
-            println!("Receive buf: {:?}", revc_buf);
-            println!("Bytes read: {:?}", bytes_read);
-
             if bytes_read == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionReset,
@@ -443,7 +440,6 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     pub async fn write_command_async(&mut self, command: impl AsRef<[u8]>) -> io::Result<()> {
         let command = build_command_codec12(command);
 
-        println!("Command being sent: {:?}", command);
         self.inner.write_all(&command).await?;
         self.inner.flush().await?;
 
@@ -457,8 +453,6 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         loop {
             let mut revc_buf = vec![0u8; self.packet_buf_capacity];
             let bytes_read = self.inner.read(&mut revc_buf).await?;
-            println!("Parse Buf: {:?}", parse_buf);
-            println!("Bytes read: {:?}", bytes_read);
 
             if bytes_read == 0 {
                 return Err(io::Error::new(
