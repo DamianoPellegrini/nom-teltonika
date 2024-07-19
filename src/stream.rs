@@ -502,22 +502,27 @@ pub fn build_command_codec12(msg: impl AsRef<[u8]>) -> Vec<u8> {
     command.extend((8 + msg_len as u32).to_be_bytes());
 
     // codec id
-    command.push(0x0C);
+    command.extend(&0x0Cu8.to_be_bytes());
 
     // command quantity 1
-    command.push(0x01);
+    command.extend(0x01u8.to_be_bytes());
 
     // type
-    command.push(0x05);
+    command.extend(0x05u8.to_be_bytes());
 
     // command size
     command.extend((msg_len as u32).to_be_bytes());
 
     // command
-    command.extend(msg);
+    command.extend(
+        msg.iter()
+            .map(|byte| byte.to_be_bytes())
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
 
     // command quantity 2
-    command.push(0x01);
+    command.extend(&0x01u8.to_be_bytes());
 
     // crc
     let crc = crc16(&command[8..]) as u32;
