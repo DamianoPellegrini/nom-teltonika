@@ -457,6 +457,8 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         loop {
             let mut revc_buf = Vec::new();
             let bytes_read = self.inner.read(&mut revc_buf).await?;
+            println!("Parse Buf: {:?}", parse_buf);
+            println!("Bytes read: {:?}", bytes_read);
 
             if bytes_read == 0 {
                 return Err(io::Error::new(
@@ -466,7 +468,6 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
             }
 
             parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
-            println!("Parse Buf: {:?}", parse_buf);
 
             let command_parser_result = crate::parser::command_response(&parse_buf[..]);
 
