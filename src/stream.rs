@@ -451,11 +451,11 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
     }
 
     pub async fn read_command_async(&mut self) -> io::Result<Vec<u8>> {
-        let mut parse_buf: Vec<u8> = Vec::new();
+        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
 
         // Read bytes until they are enough
         loop {
-            let mut revc_buf = Vec::new();
+            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
             let bytes_read = self.inner.read(&mut revc_buf).await?;
             println!("Parse Buf: {:?}", parse_buf);
             println!("Bytes read: {:?}", bytes_read);
