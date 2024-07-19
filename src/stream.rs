@@ -444,7 +444,7 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
         // let command = build_command_codec12(command);
 
         println!("Command being sent: {:?}", command);
-        self.inner.write_all(&command).await?;
+        self.inner.write_all(command.as_ref()).await?;
         self.inner.flush().await?;
 
         Ok(())
