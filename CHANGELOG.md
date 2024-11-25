@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.5...v0.1.6) (2024-11-25)
+
+
+### Features
+
+* gprs codec 12 tx and rx ([131fca5](https://github.com/DamianoPellegrini/nom-teltonika/commit/131fca54a22b7f6e84511b49322fa5cb5eaaeda7))
+
 ## [0.1.5](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.4...v0.1.5) (2024-01-13)
 
 
