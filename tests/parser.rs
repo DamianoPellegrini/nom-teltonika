@@ -10,6 +10,7 @@ fn parse_file() {
     file.read_to_end(&mut buffer).unwrap();
     // Parse test.bin
     let (_, frame) = parser::tcp_frame(&buffer).unwrap();
+    let frame = frame.unwrap_avl();
     assert_eq!(
         frame,
         AVLFrame {

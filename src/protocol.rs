@@ -132,14 +132,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLDatagram {
     }
 }
 
-/// # Deprecated
-/// Use [`AVLFrame`] instead
-#[deprecated = "Use AVLFrame instead"]
-pub type AVLPacket = AVLFrame;
-
-/// Frame sent by the device
-///
-/// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
+/// Frame sent by the device when sending records
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AVLFrame {
@@ -155,8 +148,12 @@ impl<'a> TryFrom<&'a [u8]> for AVLFrame {
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         match tcp_frame(value) {
-            Ok((_, frame)) => Ok(frame),
+            Ok((_, TeltonikaFrame::AVL(frame))) => Ok(frame),
             Err(e) => Err(e),
+            _ => Err(nom::Err::Failure(nom::error::Error::new(
+                value,
+                nom::error::ErrorKind::Fail,
+            ))),
         }
     }
 }
@@ -167,7 +164,7 @@ impl<'a> TryFrom<&'a [u8]> for AVLFrame {
 pub struct AVLRecord {
     /// In Utc Dates
     pub timestamp: DateTime<Utc>,
-    /// How
+    /// How important this record is, see [`Priority`]
     pub priority: Priority,
     pub longitude: f64,
     pub latitude: f64,
@@ -185,8 +182,6 @@ pub struct AVLRecord {
     /// Current IO Event statuses
     pub io_events: Vec<AVLEventIO>,
 }
-
-/// Feature with no enum values io events
 
 /// IO event status
 #[derive(Debug, PartialEq, Clone)]
@@ -209,4 +204,41 @@ pub enum AVLEventIOValue {
     U64(u64),
     #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
     Variable(Vec<u8>),
+}
+
+/// Frame sent by the device when sending command responses
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct GPRSFrame {
+    pub codec: Codec,
+    /// All the commands to send with this buffer
+    pub command_responses: Vec<String>,
+    /// CRC16 Calculated using [IBM/CRC16][super::crc16] algorithm and 0xA001 polynomial
+    pub crc16: u32,
+}
+
+/// Frame sent by the device
+///
+/// Based on [Teltonika Protocol Wiki](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols#)
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum TeltonikaFrame {
+    AVL(AVLFrame),
+    GPRS(GPRSFrame),
+}
+
+impl TeltonikaFrame {
+    pub fn unwrap_avl(self) -> AVLFrame {
+        if let Self::AVL(frame) = self {
+            return frame;
+        }
+        panic!("Frame is GPRS!")
+    }
+
+    pub fn unwrap_gprs(self) -> GPRSFrame {
+        if let Self::GPRS(frame) = self {
+            return frame;
+        }
+        panic!("Frame is AVL!")
+    }
 }

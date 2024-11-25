@@ -14,16 +14,19 @@ This package makes use of the [nom crate](https://docs.rs/nom) to parse the bina
 
 ## Capabilities
 
-It parses Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
+- Parsing:
+  - Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
+  - Codec 12 command responses.
+  - It **DOES NOT** currently parse Codec 13 and 14, it **MAY** does so in the future.
 
-It **DOES NOT** currently parse Codec 12, 13 and 14 (aka GPRS Protocol), it **MAY** does so in the future.
+- It fails parsing if any of the following checks fail:
+  - Preamble **MUST BE** 0x00000000
+  - CRCs **DOES NOT** match
+  - Record Counts **DOES NOT** match
+  - UDP Un-usable byte **MUST BE** 0x01
+  - Command response type byte **MUST BE** 0x06
 
-It fails parsing if any of the following checks fail:
-
-- Preamble **MUST BE** 0x00000000
-- CRCs **DOES NOT** match
-- Record Counts **DOES NOT** match
-- UDP Un-usable byte **MUST BE** 0x01
+- It allows for sending commands to a device using Codec 12 **ONLY**.
 
 ## Features
 

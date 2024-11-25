@@ -4,7 +4,7 @@ use nom::{
     character::streaming::anychar,
     combinator::{cond, verify},
     error::ParseError,
-    multi::{length_count, length_data},
+    multi::{count, length_count, length_data},
     number::streaming::{be_i32, be_u16, be_u32, be_u64, be_u8},
     IResult, Parser,
 };
@@ -178,40 +178,67 @@ fn record<'a>(codec: Codec) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], AVLReco
     }
 }
 
-/// # Deprecated
-/// Use [`tcp_frame`] instead
-#[deprecated(note = "Use tcp_frame instead")]
-pub fn tcp_packet(input: &[u8]) -> IResult<&[u8], AVLFrame> {
-    tcp_frame(input)
+/// Parse a single command response.
+/// 
+/// That means a 4 bytes length and X bytes characters.
+fn command_response(input: &[u8]) -> IResult<&[u8], String> {
+    let (input, response) = length_count(be_u32, anychar)(input)?;
+    Ok((input, response.iter().collect()))
 }
 
 /// Parse a TCP teltonika frame
 ///
+/// Either parse a GPRS Command response or an AVL Record response
 ///
 /// It does 3 main error checks:
 /// - Preamble is all zeroes
-/// - Both record counts coincide
+/// - Both counts coincide
 /// - Computes CRC and verifies it against the one sent
-pub fn tcp_frame(input: &[u8]) -> IResult<&[u8], AVLFrame> {
+pub fn tcp_frame(input: &[u8]) -> IResult<&[u8], TeltonikaFrame> {
     let (input, _preamble) = tag("\0\0\0\0")(input)?;
-
     let (input, data) = length_data(be_u32)(input)?;
+
     let calculated_crc16 = crate::crc16(data);
     let (data, codec) = codec(data)?;
-    let (data, records) = length_count(be_u8, record(codec))(data)?;
-    let (_data, _records_count) = verify(be_u8, |number_of_records| {
-        *number_of_records as usize == records.len()
-    })(data)?;
-    let (input, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(input)?;
 
-    Ok((
-        input,
-        AVLFrame {
-            codec,
-            records,
-            crc16,
-        },
-    ))
+    Ok(match codec {
+        Codec::C8 | Codec::C8Ext | Codec::C16 => {
+            let (data, records) = length_count(be_u8, record(codec))(data)?;
+            let (_data, _records_count) = verify(be_u8, |number_of_records| {
+                *number_of_records as usize == records.len()
+            })(data)?;
+            let (input, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(input)?;
+            (
+                input,
+                TeltonikaFrame::AVL(AVLFrame {
+                    codec,
+                    records,
+                    crc16,
+                }),
+            )
+        }
+        Codec::C12 => {
+            let (data, response_qty) = be_u8(data)?;
+
+            // Type of a command response
+            let (data, _) = tag("\x06")(data)?;
+            let (data, responses) = count(command_response, response_qty as usize)(data)?;
+            let (_data, _response_qty) = verify(be_u8, |number_of_responses| {
+                *number_of_responses as usize == responses.len()
+            })(data)?;
+
+            let (input, crc16) = verify(be_u32, |crc16| *crc16 == calculated_crc16 as u32)(input)?;
+            (
+                input,
+                TeltonikaFrame::GPRS(GPRSFrame {
+                    codec,
+                    command_responses: responses,
+                    crc16,
+                }),
+            )
+        }
+        _ => panic!("Codec not supported"),
+    })
 }
 
 /// Parse an UDP teltonika datagram
@@ -353,7 +380,7 @@ mod tests {
         assert_eq!(input, &[]);
         assert_eq!(
             frame,
-            AVLFrame {
+            TeltonikaFrame::AVL(AVLFrame {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
                     timestamp: "2019-06-10T10:04:46Z".parse().unwrap(),
@@ -390,7 +417,7 @@ mod tests {
                     ],
                 },],
                 crc16: 51151,
-            }
+            })
         );
     }
 
@@ -401,7 +428,7 @@ mod tests {
         assert_eq!(input, &[]);
         assert_eq!(
             frame,
-            AVLFrame {
+            TeltonikaFrame::AVL(AVLFrame {
                 codec: Codec::C8,
                 records: vec![AVLRecord {
                     timestamp: "2019-06-10T10:05:36Z".parse().unwrap(),
@@ -430,7 +457,7 @@ mod tests {
                     ],
                 },],
                 crc16: 61994,
-            }
+            })
         );
     }
 
@@ -441,7 +468,7 @@ mod tests {
         assert_eq!(input, &[]);
         assert_eq!(
             frame,
-            AVLFrame {
+            TeltonikaFrame::AVL(AVLFrame {
                 codec: Codec::C8,
                 records: vec![
                     AVLRecord {
@@ -478,7 +505,7 @@ mod tests {
                     },
                 ],
                 crc16: 9516,
-            }
+            })
         );
     }
 
@@ -489,7 +516,7 @@ mod tests {
         assert_eq!(input, &[]);
         assert_eq!(
             frame,
-            AVLFrame {
+            TeltonikaFrame::AVL(AVLFrame {
                 codec: Codec::C8Ext,
                 records: vec![AVLRecord {
                     timestamp: "2019-06-10T11:36:32Z".parse().unwrap(),
@@ -526,7 +553,7 @@ mod tests {
                     ],
                 },],
                 crc16: 10644,
-            }
+            })
         );
     }
 
@@ -537,7 +564,7 @@ mod tests {
         assert_eq!(input, &[]);
         assert_eq!(
             frame,
-            AVLFrame {
+            TeltonikaFrame::AVL(AVLFrame {
                 codec: Codec::C16,
                 records: vec![
                     AVLRecord {
@@ -602,7 +629,7 @@ mod tests {
                     }
                 ],
                 crc16: 24499
-            }
+            })
         );
     }
 
@@ -668,8 +695,31 @@ mod tests {
     fn parse_negative_emisphere_coordinates() {
         let input = hex::decode("00000000000000460801000001776D58189001FA0A1F00F1194D80009C009D05000F9B0D06EF01F0001505C80045019B0105B5000BB6000A424257430F8044000002F1000060191000000BE1000100006E2B").unwrap();
         let (input, frame) = tcp_frame(&input).unwrap();
+        let frame = frame.unwrap_avl();
         assert_eq!(input, &[]);
         assert_eq!(frame.records[0].longitude, -10.0);
         assert_eq!(frame.records[0].latitude, -25.0);
+    }
+
+    #[test]
+    fn parse_command_response_codec12_1() {
+        let input = hex::decode("00000000000000900C010600000088494E493A323031392F372F323220373A3232205254433A323031392F372F323220373A3533205253543A32204552523A312053523A302042523A302043463A302046473A3020464C3A302054553A302F302055543A3020534D533A30204E4F4750533A303A3330204750533A31205341543A302052533A332052463A36352053463A31204D443A30010000C78F").unwrap();
+        let (input, frame) = tcp_frame(&input).unwrap();
+        let frame = frame.unwrap_gprs();
+        assert_eq!(input, &[]);
+        assert_eq!(&frame.command_responses[0], "INI:2019/7/22 7:22 RTC:2019/7/22 7:53 RST:2 ERR:1 SR:0 BR:0 CF:0 FG:0 FL:0 TU:0/0 UT:0 SMS:0 NOGPS:0:30 GPS:1 SAT:0 RS:3 RF:65 SF:1 MD:0");
+    }
+
+    #[test]
+    fn parse_command_response_codec12_2() {
+        let input = hex::decode("00000000000000370C01060000002F4449313A31204449323A30204449333A302041494E313A302041494E323A313639323420444F313A3020444F323A3101000066E3").unwrap();
+        let (input, frame) = tcp_frame(&input).unwrap();
+        let frame = frame.unwrap_gprs();
+
+        assert_eq!(input, &[]);
+        assert_eq!(
+            &frame.command_responses[0],
+            "DI1:1 DI2:0 DI3:0 AIN1:0 AIN2:16924 DO1:0 DO2:1"
+        );
     }
 }
