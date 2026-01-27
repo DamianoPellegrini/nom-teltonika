@@ -443,9 +443,13 @@ fn parse_beacon_data_385(input: &[u8]) -> IResult<&[u8], BeaconData> {
 fn parse_beacon_385_common(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
     let (input, beacon_flags) = be_u8(input)?;
 
-    let (beacon_type, id_length) = match beacon_flags {
-        0x01 => (BeaconType::Eddystone, 16u8),
-        0x21 => (BeaconType::IBeacon, 20u8),
+    let (beacon_type, id_length, has_battery, has_temp) = match beacon_flags {
+        0x01 => (BeaconType::Eddystone, 16u8, false, false),
+        0x03 => (BeaconType::Eddystone, 16u8, true, false),
+        0x07 => (BeaconType::Eddystone, 16u8, true, true),
+        0x21 => (BeaconType::IBeacon, 20u8, false, false),
+        0x23 => (BeaconType::IBeacon, 20u8, true, false),
+        0x27 => (BeaconType::IBeacon, 20u8, true, true),
         _ => {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -457,6 +461,20 @@ fn parse_beacon_385_common(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
     let (input, beacon_id_data) = take(id_length)(input)?;
     let (input, rssi) = be_u8(input)?;
     let rssi = rssi as i8;
+
+    let (input, battery_voltage) = if has_battery {
+        let (input, voltage) = be_u16(input)?;
+        (input, Some(voltage))
+    } else {
+        (input, None)
+    };
+
+    let (input, temperature) = if has_temp {
+        let (input, temp) = be_u16(input)?;
+        (input, Some(temp))
+    } else {
+        (input, None)
+    };
 
     let beacon_id = match beacon_type {
         BeaconType::Eddystone => {
@@ -475,13 +493,21 @@ fn parse_beacon_385_common(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
         }
     };
 
+    let mut parameters = Vec::new();
+    if let Some(voltage) = battery_voltage {
+        parameters.push(BeaconParameter::BatteryVoltage(voltage));
+    }
+    if let Some(temp) = temperature {
+        parameters.push(BeaconParameter::Temperature(temp));
+    }
+
     Ok((
         input,
         BeaconRecord {
             beacon_type,
             beacon_id,
             rssi,
-            parameters: Vec::new(),
+            parameters,
         },
     ))
 }
