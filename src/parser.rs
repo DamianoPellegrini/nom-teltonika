@@ -306,7 +306,8 @@ fn parse_beacon_data_548(input: &[u8]) -> IResult<&[u8], BeaconData> {
         let mut beacon_remaining = beacon_data;
         let mut rssi = 0i8;
         let mut beacon_id_data = Vec::new();
-        let mut parameters = Vec::new();
+        let mut battery_voltage = None;
+        let mut temperature = None;
 
         // Parse beacon parameters according to documentation format
         while !beacon_remaining.is_empty() {
@@ -314,31 +315,12 @@ fn parse_beacon_data_548(input: &[u8]) -> IResult<&[u8], BeaconData> {
             let (input, param_length) = be_u8(input)?;
             let (input, param_data) = take(param_length)(input)?;
 
-            match param_id {
-                0x00 => {
-                    // RSSI parameter
-                    if param_length == 1 {
-                        rssi = param_data[0] as i8;
-                    }
-                }
-                0x01 => {
-                    // Beacon ID parameter
-                    beacon_id_data = param_data.to_vec();
-                }
-                0x02 => {
-                    // Additional data parameter
-                    parameters.push(BeaconParameter {
-                        id: param_id,
-                        value: param_data.to_vec(),
-                    });
-                }
-                _ => {
-                    // Unknown parameter
-                    parameters.push(BeaconParameter {
-                        id: param_id,
-                        value: param_data.to_vec(),
-                    });
-                }
+            match (param_id, param_length) {
+                (0x00, 1) => rssi = param_data[0] as i8,
+                (0x01, _) => beacon_id_data = param_data.to_vec(),
+                (0x02, 2) => battery_voltage = Some(u16::from_be_bytes([param_data[0], param_data[1]])),
+                (0x03, 2) => temperature = Some(u16::from_be_bytes([param_data[0], param_data[1]])),
+                _ => {}
             }
 
             beacon_remaining = input;
@@ -394,7 +376,8 @@ fn parse_beacon_data_548(input: &[u8]) -> IResult<&[u8], BeaconData> {
             beacon_type,
             beacon_id,
             rssi,
-            parameters,
+            battery_voltage,
+            temperature,
         });
 
         remaining = input;
@@ -493,21 +476,14 @@ fn parse_beacon_385_common(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
         }
     };
 
-    let mut parameters = Vec::new();
-    if let Some(voltage) = battery_voltage {
-        parameters.push(BeaconParameter::BatteryVoltage(voltage));
-    }
-    if let Some(temp) = temperature {
-        parameters.push(BeaconParameter::Temperature(temp));
-    }
-
     Ok((
         input,
         BeaconRecord {
             beacon_type,
             beacon_id,
             rssi,
-            parameters,
+            battery_voltage,
+            temperature,
         },
     ))
 }
@@ -555,7 +531,8 @@ fn parse_beacon_record(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
         }
     };
 
-    let mut parameters = Vec::new();
+    let mut battery_voltage = None;
+    let mut temperature = None;
     let mut remaining = beacon_data;
 
     while !remaining.is_empty() {
@@ -563,10 +540,13 @@ fn parse_beacon_record(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
         let (input, param_length) = be_u8(input)?;
         let (input, param_value) = take(param_length)(input)?;
 
-        parameters.push(BeaconParameter {
-            id: param_id,
-            value: param_value.to_vec(),
-        });
+        // Parse known parameter types into explicit fields
+        // For AVL IDs 10828/10829/10831: param_id 0x0e = battery, 0x01 = temperature
+        match (param_id, param_length) {
+            (0x0e, 2) => battery_voltage = Some(u16::from_be_bytes([param_value[0], param_value[1]])),
+            (0x01, 2) => temperature = Some(u16::from_be_bytes([param_value[0], param_value[1]])),
+            _ => {}
+        }
 
         remaining = input;
     }
@@ -577,7 +557,8 @@ fn parse_beacon_record(input: &[u8]) -> IResult<&[u8], BeaconRecord> {
             beacon_type,
             beacon_id,
             rssi,
-            parameters,
+            battery_voltage,
+            temperature,
         },
     ))
 }
@@ -1057,7 +1038,8 @@ mod tests {
             } else {
                 panic!("Expected Eddystone beacon ID");
             }
-            assert_eq!(beacon.parameters.len(), 2);
+            assert_eq!(beacon.battery_voltage, Some(3030));
+            assert_eq!(beacon.temperature, None);
         } else {
             panic!("Expected beacon data");
         }

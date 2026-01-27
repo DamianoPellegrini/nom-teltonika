@@ -226,7 +226,8 @@ pub struct BeaconRecord {
     pub beacon_type: BeaconType,
     pub beacon_id: BeaconId,
     pub rssi: i8,
-    pub parameters: Vec<BeaconParameter>,
+    pub battery_voltage: Option<u16>,
+    pub temperature: Option<u16>,
 }
 
 /// Beacon type from flags
@@ -243,12 +244,4 @@ pub enum BeaconType {
 pub enum BeaconId {
     Eddystone { namespace: [u8; 10], instance: [u8; 6] },
     IBeacon { uuid: [u8; 16], major: u16, minor: u16 },
-}
-
-/// Additional beacon parameters
-#[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct BeaconParameter {
-    pub id: u8,
-    pub value: Vec<u8>,
 }
