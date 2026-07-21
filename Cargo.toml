@@ -3,19 +3,18 @@ name = "nom-teltonika"
 version = "0.1.6"
 edition = "2024"
 rust-version = "1.85"
-description = "A dependency-free-core Teltonika binary protocol decoder and encoder"
+description = "Teltonika TCP and UDP protocol decoder and encoder with a dependency-free core"
 readme = "README.md"
 repository = "https://github.com/DamianoPellegrini/nom-teltonika"
 license = "MIT"
-keywords = ["decoder", "library", "binary", "teltonika", "protocol"]
-categories = ["encoding", "decoder-implementations"]
+keywords = ["teltonika", "avl", "gps", "tcp", "udp"]
+categories = ["encoding", "network-programming", "parser-implementations"]
 publish = true
 include = [
     "src/**",
     "examples/**",
     "benches/**",
     "tests/*.rs",
-    "tests/*.md",
     "tests/common/*.rs",
     "docs/migration-0.2.md",
     "README.md",
@@ -47,6 +46,10 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 [[bench]]
 name = "decoder"
 harness = false
+
+[[example]]
+name = "tcp_server_tokio"
+required-features = ["tokio"]
 
 [package.metadata.docs.rs]
 all-features = true
