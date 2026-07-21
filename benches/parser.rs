@@ -2,7 +2,9 @@ use std::{hint::black_box, io::Cursor};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nom_teltonika::{
-    Limits, StreamConfig, TeltonikaStream, encode_codec12_command, parse_tcp_frame,
+    encode::encode_codec12_command,
+    parser::{Limits, parse_tcp_frame},
+    stream::{StreamConfig, TeltonikaStream},
 };
 
 const CODEC8: &str = "000000000000003608010000016B40D8EA30010000000000000000000000000000000105021503010101425E0F01F10000601A014E0000000000000000010000C7CF";

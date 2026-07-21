@@ -1,11 +1,24 @@
 use std::num::NonZeroUsize;
 
-use crate::protocol::{
+use crate::protocol_impl::{
     AvlCodec, AvlPacket, AvlRecord, AvlTimestamp, Codec12Message, Codec12Packet, CountStatus,
     FatalReason, Frame, GenerationType, GpsElement, Imei, IoElement, IoId, IoValue, Limits,
     ParseError, Parsed, Priority, RejectionReason, UdpDatagram,
 };
 
+/// Computes the CRC-16/IBM value used by Teltonika TCP frames.
+///
+/// Pass exactly the bytes from the codec ID through the second record or
+/// command count. The TCP preamble, data length, and four-byte CRC field are
+/// outside the checksum coverage.
+///
+/// # Examples
+///
+/// ```
+/// use nom_teltonika::parser::crc16;
+///
+/// assert_eq!(crc16(b"123456789"), 0xbb3d);
+/// ```
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0u16;
     for &byte in data {
@@ -21,6 +34,27 @@ pub fn crc16(data: &[u8]) -> u16 {
     crc
 }
 
+/// Parses the length-prefixed ASCII IMEI sent at the start of a TCP session.
+///
+/// The result owns the validated 15 decimal digits. Bytes after the handshake
+/// remain untouched and are excluded from [`Parsed::consumed`].
+///
+/// # Errors
+///
+/// Returns [`ParseError::Incomplete`] until the declared handshake is present.
+/// A complete handshake is [`ParseError::Rejected`] if its length is not 15 or
+/// if it contains a non-decimal byte; its `consumed` field identifies the
+/// complete handshake that may be discarded.
+///
+/// # Examples
+///
+/// ```
+/// use nom_teltonika::parser::parse_imei;
+///
+/// let parsed = parse_imei(b"\x00\x0f356307042441013next").unwrap();
+/// assert_eq!(parsed.value.as_str(), "356307042441013");
+/// assert_eq!(parsed.consumed, 17);
+/// ```
 pub fn parse_imei(input: &[u8]) -> Result<Parsed<Imei>, ParseError> {
     require(input.len(), 2)?;
     let (length, remaining) = input.split_at(2);
@@ -41,10 +75,44 @@ pub fn parse_imei(input: &[u8]) -> Result<Parsed<Imei>, ParseError> {
     Ok(Parsed { value, consumed })
 }
 
+/// Parses one TCP AVL or Codec 12 frame using [`Limits::default`].
+///
+/// The parser validates the preamble, declared length, codec-specific layout,
+/// duplicate counts, and CRC before returning an owned [`Frame`]. It stops at
+/// the first complete frame when `input` also contains the next frame.
+///
+/// # Errors
+///
+/// See [`ParseError`] for the buffering and recovery contract. In particular,
+/// retain all input on [`ParseError::Incomplete`], consume exactly the reported
+/// bytes on [`ParseError::Rejected`], and reset or close the transport after
+/// [`ParseError::Fatal`] unless you have an external resynchronization rule.
+///
+/// # Examples
+///
+/// ```
+/// use nom_teltonika::{encode::encode_codec12_command, parser::parse_tcp_frame};
+///
+/// let bytes = encode_codec12_command(b"getinfo");
+/// let parsed = parse_tcp_frame(&bytes).unwrap();
+/// assert_eq!(parsed.consumed, bytes.len());
+/// ```
 pub fn parse_tcp_frame(input: &[u8]) -> Result<Parsed<Frame>, ParseError> {
     parse_tcp_frame_with_limits(input, Limits::default())
 }
 
+/// Parses one TCP frame with caller-provided wire-size limits.
+///
+/// Use this variant at trust boundaries where limits differ from the defaults.
+/// A declared size above the codec-specific limit fails as soon as the header
+/// and codec ID are available, before the parser waits for or allocates the
+/// declared payload.
+///
+/// # Errors
+///
+/// Returns the same [`ParseError`] variants as [`parse_tcp_frame`], including a
+/// fatal [`crate::parser::FatalReason::FrameTooLarge`] when the declared complete
+/// wire size exceeds `limits`.
 pub fn parse_tcp_frame_with_limits(
     input: &[u8],
     limits: Limits,
@@ -117,10 +185,33 @@ fn parse_tcp_frame_inner(input: &[u8], limits: Limits) -> Result<Parsed<Frame>, 
     })
 }
 
+/// Parses one UDP AVL datagram using [`Limits::default`].
+///
+/// This slice parser is useful with custom socket code. Unlike
+/// [`crate::udp::TeltonikaUdpSocket`], it deliberately permits bytes after the
+/// first declared datagram and reports where they begin through
+/// [`Parsed::consumed`].
+///
+/// # Errors
+///
+/// Returns [`ParseError::Incomplete`] for a truncated declared datagram,
+/// [`ParseError::Rejected`] for a safely delimited invalid payload, and
+/// [`ParseError::Fatal`] when framing cannot be trusted.
 pub fn parse_udp_datagram(input: &[u8]) -> Result<Parsed<UdpDatagram>, ParseError> {
     parse_udp_datagram_with_limits(input, Limits::default())
 }
 
+/// Parses one UDP AVL datagram with caller-provided wire-size limits.
+///
+/// The limit counts the complete datagram, including its two-byte length. Use
+/// [`crate::udp::TeltonikaUdpSocket`] when you also need truncation detection and
+/// source-address preservation from a socket.
+///
+/// # Errors
+///
+/// Returns the same [`ParseError`] variants as [`parse_udp_datagram`], including
+/// a fatal [`crate::parser::FatalReason::DatagramTooLarge`] when the declared
+/// complete wire size exceeds `limits`.
 pub fn parse_udp_datagram_with_limits(
     input: &[u8],
     limits: Limits,
@@ -166,15 +257,18 @@ fn parse_udp_datagram_inner(
         );
     }
     let avl_packet_id = payload[3];
-    let imei_input = &payload[4..];
-    let parsed_imei = parse_imei(imei_input).map_err(|error| remap_rejection(error, total, 6))?;
-    if parsed_imei.consumed != 17 {
+    let imei_length = usize::from(u16::from_be_bytes(
+        payload[4..6].try_into().expect("two bytes"),
+    ));
+    if imei_length != 15 {
         return reject(total, 6, RejectionReason::InvalidImei);
     }
-    let avl_offset = 6 + parsed_imei.consumed;
-    let packet = parse_avl_packet(&imei_input[parsed_imei.consumed..], total, avl_offset)?;
+    let imei_digits: [u8; 15] = payload[6..21].try_into().expect("fifteen bytes");
+    let imei =
+        Imei::new(imei_digits).map_err(|_| rejected(total, 8, RejectionReason::InvalidImei))?;
+    let packet = parse_avl_packet(&payload[21..], total, 23)?;
     Ok(Parsed {
-        value: UdpDatagram::from_parts(channel_packet_id, avl_packet_id, parsed_imei.value, packet),
+        value: UdpDatagram::from_parts(channel_packet_id, avl_packet_id, imei, packet),
         consumed: total,
     })
 }
@@ -477,19 +571,6 @@ const fn rejected(consumed: usize, offset: usize, reason: RejectionReason) -> Pa
         consumed,
         offset,
         reason,
-    }
-}
-
-fn remap_rejection(error: ParseError, consumed: usize, base: usize) -> ParseError {
-    match error {
-        ParseError::Rejected { offset, reason, .. } => rejected(consumed, base + offset, reason),
-        ParseError::Incomplete { .. } => {
-            rejected(consumed, base, RejectionReason::InvalidPayloadLength)
-        }
-        ParseError::Fatal { offset, reason } => ParseError::Fatal {
-            offset: base + offset,
-            reason,
-        },
     }
 }
 

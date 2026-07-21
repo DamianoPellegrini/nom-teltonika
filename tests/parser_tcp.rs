@@ -3,7 +3,7 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::*;
-use nom_teltonika::*;
+use nom_teltonika::{encode::*, parser::*, protocol::*};
 
 #[test]
 fn should_parse_valid_imei_when_handshake_is_complete() {

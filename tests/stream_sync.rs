@@ -3,7 +3,7 @@ mod common;
 use std::io::Cursor;
 
 use common::*;
-use nom_teltonika::*;
+use nom_teltonika::{parser::*, protocol::*, stream::*};
 
 #[test]
 fn should_read_frame_across_every_stream_read_size() {
@@ -47,7 +47,7 @@ fn should_consume_rejection_before_reading_next_valid_frame() {
 }
 
 #[test]
-fn should_flush_protocol_writes_and_keep_encoder_at_root() {
+fn should_flush_protocol_writes() {
     let mut stream = TeltonikaStream::new(Cursor::new(Vec::new()));
     stream.write_imei_approval(true).unwrap();
     stream.write_avl_ack(2).unwrap();

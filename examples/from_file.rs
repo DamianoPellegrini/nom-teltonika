@@ -4,6 +4,6 @@ fn main() {
     let mut buffer = Vec::new();
     std::io::Read::read_to_end(&mut file, &mut buffer).unwrap();
     // Parse file.bin
-    let parsed = nom_teltonika::parse_tcp_frame(&buffer).unwrap();
+    let parsed = nom_teltonika::parser::parse_tcp_frame(&buffer).unwrap();
     println!("{:#?}", parsed.value);
 }

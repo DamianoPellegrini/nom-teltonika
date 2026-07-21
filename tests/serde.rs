@@ -1,6 +1,9 @@
 #![cfg(feature = "serde")]
 
-use nom_teltonika::{Imei, Limits, parse_tcp_frame};
+use nom_teltonika::{
+    parser::{Limits, parse_tcp_frame},
+    protocol::Imei,
+};
 
 #[test]
 fn should_serialize_wire_model_when_serde_is_enabled() {

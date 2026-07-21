@@ -3,7 +3,7 @@
 mod common;
 
 use common::*;
-use nom_teltonika::*;
+use nom_teltonika::{protocol::Frame, stream::*};
 
 #[tokio::test]
 async fn should_match_sync_behavior_for_async_stream() {

@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use nom_teltonika::{Frame, TeltonikaStream};
+use nom_teltonika::{protocol::Frame, stream::TeltonikaStream};
 
 fn main() {
     // Write getinfo command to the device

@@ -8,7 +8,7 @@ use std::{
 };
 
 use common::*;
-use nom_teltonika::{parse_tcp_frame, parse_udp_datagram};
+use nom_teltonika::parser::{parse_tcp_frame, parse_udp_datagram};
 
 struct BufferWriter(Arc<Mutex<Vec<u8>>>);
 

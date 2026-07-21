@@ -5,7 +5,7 @@ Version 0.2 replaces the `nom`-based API. The crate keeps its historical
 
 ## Update parser calls
 
-Import parser functions from the crate root. A successful parse returns
+Import parser functions from the `parser` module. A successful parse returns
 `Parsed<T>` instead of a `(remainder, value)` tuple.
 
 ```rust
@@ -13,10 +13,10 @@ Import parser functions from the crate root. A successful parse returns
 // let (remainder, frame) = nom_teltonika::parser::tcp_frame(input)?;
 
 // 0.2
-let parsed = nom_teltonika::parse_tcp_frame(input)?;
+let parsed = nom_teltonika::parser::parse_tcp_frame(input)?;
 let remainder = &input[parsed.consumed..];
 let frame = parsed.value;
-# Ok::<(), nom_teltonika::ParseError>(())
+# Ok::<(), nom_teltonika::parser::ParseError>(())
 ```
 
 `parse_tcp_frame` returns an owned `Frame`. Variable-length byte fields are copied
@@ -54,11 +54,11 @@ packet:
 
 ```rust
 # use std::io::Cursor;
-# use nom_teltonika::TeltonikaStream;
+# use nom_teltonika::stream::TeltonikaStream;
 # let mut stream = TeltonikaStream::new(Cursor::new(Vec::<u8>::new()));
 stream.write_imei_approval(true)?;
 stream.write_avl_ack(2)?;
-# Ok::<(), nom_teltonika::StreamError>(())
+# Ok::<(), nom_teltonika::stream::StreamError>(())
 ```
 
 Use `TeltonikaUdpSocket` for UDP. Its receive methods return the source address,
