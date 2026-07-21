@@ -3,7 +3,7 @@ use std::{
     fmt,
     num::NonZeroUsize,
     str::Utf8Error,
-    time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(feature = "serde")]
@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A successfully decoded value and the number of input bytes it occupies.
 ///
-/// The value is owned and does not borrow the input. Slice-parser callers can
-/// preserve concatenated data with `&input[parsed.consumed..]`.
-pub struct Parsed<T> {
+/// The value is owned and does not borrow the input. Slice-decoder callers can
+/// preserve concatenated data with `&input[decoded.consumed..]`.
+pub struct Decoded<T> {
     /// The validated protocol value.
     pub value: T,
-    /// Number of bytes belonging to the parsed value, measured from input byte zero.
+    /// Number of bytes belonging to the decoded value, measured from input byte zero.
     pub consumed: usize,
 }
 
@@ -26,9 +26,27 @@ pub struct Parsed<T> {
 /// Why a complete, safely delimited frame or datagram was rejected.
 ///
 /// A rejection does not make the following transport bytes ambiguous. Use the
-/// enclosing [`ParseError::Rejected::consumed`] value—not `offset`—to advance a
+/// enclosing [`DecodeError::Rejected::consumed`] value—not `offset`—to advance a
 /// receive buffer.
 pub enum RejectionReason {
+    /// An AVL packet declares no records.
+    EmptyAvlPacket,
+    /// A Codec 12 frame contains no messages.
+    EmptyCodec12Batch,
+    /// Messages in one Codec 12 frame do not share the same type byte.
+    Codec12TypeMismatch {
+        /// Type byte established by the first message.
+        expected: u8,
+        /// Different type byte found later in the batch.
+        actual: u8,
+    },
+    /// A Codec 12 frame contains more messages than its one-byte quantities can represent.
+    TooManyCodec12Messages {
+        /// Number of messages decoded from the data field.
+        actual: usize,
+        /// Maximum representable message count.
+        maximum: usize,
+    },
     /// The packet uses a codec that this crate does not decode.
     UnsupportedCodec {
         /// Codec byte found on the wire.
@@ -81,6 +99,16 @@ pub enum RejectionReason {
 impl fmt::Display for RejectionReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyAvlPacket => f.write_str("AVL packet contains no records"),
+            Self::EmptyCodec12Batch => f.write_str("Codec 12 batch contains no messages"),
+            Self::Codec12TypeMismatch { expected, actual } => write!(
+                f,
+                "Codec 12 message type mismatch (expected {expected:#04x}, found {actual:#04x})"
+            ),
+            Self::TooManyCodec12Messages { actual, maximum } => write!(
+                f,
+                "Codec 12 batch contains {actual} messages, maximum is {maximum}"
+            ),
             Self::UnsupportedCodec { codec_id } => write!(f, "unsupported codec 0x{codec_id:02x}"),
             Self::InvalidPriority { value } => write!(f, "invalid priority {value}"),
             Self::InvalidGenerationType { value } => {
@@ -110,12 +138,19 @@ impl fmt::Display for RejectionReason {
 #[non_exhaustive]
 /// Why framing is unsafe to resume from automatically.
 ///
-/// The parser provides a diagnostic byte offset but no consumable length. Close
+/// The decoder provides a diagnostic byte offset but no consumable length. Close
 /// or reset the transport unless your application has an externally justified
 /// resynchronization strategy.
 pub enum FatalReason {
     /// A TCP frame does not start with four zero bytes.
     InvalidPreamble,
+    /// An IMEI handshake declares a length other than the required 15 bytes.
+    InvalidImeiLength {
+        /// Length declared by the handshake prefix.
+        declared: usize,
+        /// Required IMEI byte length.
+        expected: usize,
+    },
     /// Declared lengths overflow the platform's addressable size.
     LengthOverflow,
     /// A TCP frame's declared complete wire size exceeds its configured limit.
@@ -125,25 +160,19 @@ pub enum FatalReason {
         /// Configured maximum complete wire bytes for the detected codec family.
         limit: usize,
     },
-    /// A UDP datagram's declared complete wire size exceeds its configured limit.
-    DatagramTooLarge {
-        /// Complete wire bytes declared by the header.
-        declared: usize,
-        /// Configured maximum complete UDP datagram size.
-        limit: usize,
-    },
 }
 
 impl fmt::Display for FatalReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPreamble => f.write_str("invalid TCP preamble"),
+            Self::InvalidImeiLength { declared, expected } => write!(
+                f,
+                "IMEI handshake declares {declared} bytes, expected {expected}"
+            ),
             Self::LengthOverflow => f.write_str("wire length overflow"),
             Self::FrameTooLarge { declared, limit } => {
                 write!(f, "frame length {declared} exceeds limit {limit}")
-            }
-            Self::DatagramTooLarge { declared, limit } => {
-                write!(f, "datagram length {declared} exceeds limit {limit}")
             }
         }
     }
@@ -151,12 +180,12 @@ impl fmt::Display for FatalReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-/// A parser failure with an explicit buffering and recovery contract.
+/// A decoder failure with an explicit buffering and recovery contract.
 ///
 /// The three variants distinguish waiting for bytes from discarding one known
 /// bad packet and abandoning untrusted framing. This distinction is what makes
-/// the slice parsers suitable for incremental network buffers.
-pub enum ParseError {
+/// the slice decoders suitable for incremental network buffers.
+pub enum DecodeError {
     /// The prefix is valid but does not yet contain the declared packet.
     Incomplete {
         /// Exact minimum number of additional bytes needed at this stage.
@@ -166,21 +195,21 @@ pub enum ParseError {
     Rejected {
         /// Number of bytes that may be removed from the receive buffer.
         consumed: usize,
-        /// Diagnostic byte offset, relative to the parser input.
+        /// Diagnostic byte offset, relative to the decoder input.
         offset: usize,
         /// Validation failure that caused the rejection.
         reason: RejectionReason,
     },
-    /// Framing is untrusted and the parser cannot identify a safe next packet.
+    /// Framing is untrusted and the decoder cannot identify a safe next packet.
     Fatal {
-        /// Diagnostic byte offset, relative to the parser input.
+        /// Diagnostic byte offset, relative to the decoder input.
         offset: usize,
         /// Framing failure that prevents safe recovery.
         reason: FatalReason,
     },
 }
 
-impl fmt::Display for ParseError {
+impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Incomplete { needed } => {
@@ -196,135 +225,264 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl Error for ParseError {}
+impl Error for DecodeError {}
 
+/// Failure decoding one complete UDP datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpDecodeError {
+    /// Fewer than the two bytes required for the UDP length prefix were received.
+    TruncatedHeader {
+        /// Bytes supplied by the caller.
+        actual: usize,
+    },
+    /// The declared complete datagram size differs from the supplied slice.
+    LengthMismatch {
+        /// Complete bytes declared by the prefix.
+        declared: usize,
+        /// Bytes supplied by the caller.
+        actual: usize,
+    },
+    /// The declared complete datagram exceeds the configured safety limit.
+    DatagramTooLarge {
+        /// Complete bytes declared by the prefix.
+        declared: usize,
+        /// Configured maximum complete datagram size.
+        limit: usize,
+    },
+    /// The datagram is delimited but its channel or AVL payload is invalid.
+    Invalid {
+        /// Diagnostic byte offset relative to the datagram start.
+        offset: usize,
+        /// Validation failure at that offset.
+        reason: RejectionReason,
+    },
+}
+
+impl fmt::Display for UdpDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedHeader { actual } => {
+                write!(f, "UDP header is truncated: received {actual} byte(s)")
+            }
+            Self::LengthMismatch { declared, actual } => write!(
+                f,
+                "UDP datagram declares {declared} bytes but slice contains {actual}"
+            ),
+            Self::DatagramTooLarge { declared, limit } => {
+                write!(f, "UDP datagram length {declared} exceeds limit {limit}")
+            }
+            Self::Invalid { offset, reason } => {
+                write!(f, "UDP datagram invalid at byte {offset}: {reason}")
+            }
+        }
+    }
+}
+
+impl Error for UdpDecodeError {}
+
+/// Validated upper bounds for complete TCP frames accepted from untrusted peers.
+///
+/// The 1280-byte AVL default comes from Teltonika's *Data Sending Protocols*,
+/// AVL data packet section (accessed 2026-07-21). Some models document 512
+/// bytes and can opt into that value explicitly. The Codec 12 default is a
+/// local safety policy, not a Teltonika protocol limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-/// Upper bounds for complete wire packets accepted from untrusted peers.
-///
-/// Limits include every framing byte, not only the protocol payload. They bound
-/// retained stream storage and let parsers reject implausible declared lengths
-/// before waiting for the corresponding payload.
-pub struct Limits {
-    pub(crate) max_avl_wire_bytes: usize,
-    pub(crate) max_codec12_wire_bytes: usize,
-    pub(crate) max_udp_wire_bytes: usize,
+pub struct TcpLimits {
+    max_avl_frame_bytes: usize,
+    max_codec12_frame_bytes: usize,
 }
 
-impl Limits {
-    /// Default maximum complete AVL TCP frame size: 1280 bytes.
-    pub const DEFAULT_AVL_WIRE_BYTES: usize = 1280;
-    /// Default maximum complete Codec 12 TCP frame size: 64 KiB.
-    pub const DEFAULT_CODEC12_WIRE_BYTES: usize = 64 * 1024;
-    /// Default maximum complete UDP datagram size: 2 KiB.
-    pub const DEFAULT_UDP_WIRE_BYTES: usize = 2 * 1024;
+impl TcpLimits {
+    /// Teltonika's documented maximum AVL packet size, including TCP framing.
+    pub const DEFAULT_MAX_AVL_FRAME_BYTES: usize = 1280;
+    /// Local safety policy for Codec 12 frames; this is not a Teltonika wire limit.
+    pub const DEFAULT_MAX_CODEC12_FRAME_BYTES: usize = 64 * 1024;
+    /// Smallest supported complete AVL TCP frame.
+    pub const MIN_AVL_FRAME_BYTES: usize = 45;
+    /// Smallest supported complete Codec 12 TCP frame.
+    pub const MIN_CODEC12_FRAME_BYTES: usize = 20;
 
-    /// Creates validated wire-size limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LimitsError`] if any limit is too small to contain the minimum
-    /// valid packet of its family.
+    /// Creates validated TCP frame limits.
     pub fn new(
-        max_avl_wire_bytes: usize,
-        max_codec12_wire_bytes: usize,
-        max_udp_wire_bytes: usize,
+        max_avl_frame_bytes: usize,
+        max_codec12_frame_bytes: usize,
     ) -> Result<Self, LimitsError> {
-        let limits = Self {
-            max_avl_wire_bytes,
-            max_codec12_wire_bytes,
-            max_udp_wire_bytes,
-        };
-        limits.validate()?;
-        Ok(limits)
-    }
-
-    /// Returns the maximum complete AVL TCP frame size in bytes.
-    pub const fn max_avl_wire_bytes(self) -> usize {
-        self.max_avl_wire_bytes
-    }
-
-    /// Returns the maximum complete Codec 12 TCP frame size in bytes.
-    pub const fn max_codec12_wire_bytes(self) -> usize {
-        self.max_codec12_wire_bytes
-    }
-
-    /// Returns the maximum complete UDP datagram size in bytes.
-    pub const fn max_udp_wire_bytes(self) -> usize {
-        self.max_udp_wire_bytes
-    }
-
-    pub(crate) fn validate(self) -> Result<(), LimitsError> {
-        if self.max_avl_wire_bytes < 15 {
-            return Err(LimitsError::AvlTooSmall);
+        if max_avl_frame_bytes < Self::MIN_AVL_FRAME_BYTES {
+            return Err(LimitsError::AvlFrameTooSmall {
+                actual: max_avl_frame_bytes,
+                minimum: Self::MIN_AVL_FRAME_BYTES,
+            });
         }
-        if self.max_codec12_wire_bytes < 16 {
-            return Err(LimitsError::Codec12TooSmall);
+        if max_codec12_frame_bytes < Self::MIN_CODEC12_FRAME_BYTES {
+            return Err(LimitsError::Codec12FrameTooSmall {
+                actual: max_codec12_frame_bytes,
+                minimum: Self::MIN_CODEC12_FRAME_BYTES,
+            });
         }
-        if self.max_udp_wire_bytes < 23 {
-            return Err(LimitsError::UdpTooSmall);
-        }
-        Ok(())
+        Ok(Self {
+            max_avl_frame_bytes,
+            max_codec12_frame_bytes,
+        })
+    }
+
+    /// Returns the maximum complete AVL TCP frame size.
+    pub const fn max_avl_frame_bytes(self) -> usize {
+        self.max_avl_frame_bytes
+    }
+
+    /// Returns the maximum complete Codec 12 TCP frame size.
+    pub const fn max_codec12_frame_bytes(self) -> usize {
+        self.max_codec12_frame_bytes
     }
 }
 
-impl Default for Limits {
+impl Default for TcpLimits {
     fn default() -> Self {
         Self {
-            max_avl_wire_bytes: Self::DEFAULT_AVL_WIRE_BYTES,
-            max_codec12_wire_bytes: Self::DEFAULT_CODEC12_WIRE_BYTES,
-            max_udp_wire_bytes: Self::DEFAULT_UDP_WIRE_BYTES,
+            max_avl_frame_bytes: Self::DEFAULT_MAX_AVL_FRAME_BYTES,
+            max_codec12_frame_bytes: Self::DEFAULT_MAX_CODEC12_FRAME_BYTES,
+        }
+    }
+}
+
+/// Validated upper bound for complete UDP datagrams.
+///
+/// Framing and the `u16` payload-size field follow Teltonika's *Codec*, UDP
+/// channel protocol section (accessed 2026-07-21). The 2048-byte default is a
+/// local safety policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct UdpLimits {
+    max_datagram_bytes: usize,
+}
+
+impl UdpLimits {
+    /// Local safety policy for UDP datagrams; this is not a Teltonika device limit.
+    pub const DEFAULT_MAX_DATAGRAM_BYTES: usize = 2 * 1024;
+    /// Smallest supported complete UDP AVL datagram.
+    pub const MIN_DATAGRAM_BYTES: usize = 56;
+    /// Largest complete datagram representable by the two-byte payload length prefix.
+    pub const MAX_DATAGRAM_BYTES: usize = u16::MAX as usize + 2;
+
+    /// Creates a validated UDP datagram limit.
+    pub fn new(max_datagram_bytes: usize) -> Result<Self, LimitsError> {
+        if max_datagram_bytes < Self::MIN_DATAGRAM_BYTES {
+            return Err(LimitsError::UdpDatagramTooSmall {
+                actual: max_datagram_bytes,
+                minimum: Self::MIN_DATAGRAM_BYTES,
+            });
+        }
+        if max_datagram_bytes > Self::MAX_DATAGRAM_BYTES {
+            return Err(LimitsError::UdpDatagramTooLarge {
+                actual: max_datagram_bytes,
+                maximum: Self::MAX_DATAGRAM_BYTES,
+            });
+        }
+        Ok(Self { max_datagram_bytes })
+    }
+
+    /// Returns the maximum complete UDP datagram size.
+    pub const fn max_datagram_bytes(self) -> usize {
+        self.max_datagram_bytes
+    }
+}
+
+impl Default for UdpLimits {
+    fn default() -> Self {
+        Self {
+            max_datagram_bytes: Self::DEFAULT_MAX_DATAGRAM_BYTES,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// An invalid [`Limits`] configuration.
+/// An invalid TCP or UDP limit configuration.
 pub enum LimitsError {
-    /// The AVL limit cannot hold the minimum valid TCP frame.
-    AvlTooSmall,
-    /// The Codec 12 limit cannot hold the minimum valid TCP frame.
-    Codec12TooSmall,
-    /// The UDP limit cannot hold the minimum valid datagram.
-    UdpTooSmall,
+    /// The AVL TCP frame limit is below the operational minimum.
+    AvlFrameTooSmall {
+        /// Configured limit.
+        actual: usize,
+        /// Operational minimum.
+        minimum: usize,
+    },
+    /// The Codec 12 TCP frame limit is below the operational minimum.
+    Codec12FrameTooSmall {
+        /// Configured limit.
+        actual: usize,
+        /// Operational minimum.
+        minimum: usize,
+    },
+    /// The UDP datagram limit is below the operational minimum.
+    UdpDatagramTooSmall {
+        /// Configured limit.
+        actual: usize,
+        /// Operational minimum.
+        minimum: usize,
+    },
+    /// The UDP datagram limit cannot be represented by the wire prefix.
+    UdpDatagramTooLarge {
+        /// Configured limit.
+        actual: usize,
+        /// Largest wire-representable complete datagram.
+        maximum: usize,
+    },
 }
 
 impl fmt::Display for LimitsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::AvlTooSmall => "AVL limit cannot contain a minimum frame",
-            Self::Codec12TooSmall => "Codec 12 limit cannot contain a minimum frame",
-            Self::UdpTooSmall => "UDP limit cannot contain a minimum datagram",
-        })
+        match self {
+            Self::AvlFrameTooSmall { actual, minimum } => {
+                write!(f, "AVL frame limit {actual} is below minimum {minimum}")
+            }
+            Self::Codec12FrameTooSmall { actual, minimum } => write!(
+                f,
+                "Codec 12 frame limit {actual} is below minimum {minimum}"
+            ),
+            Self::UdpDatagramTooSmall { actual, minimum } => {
+                write!(f, "UDP datagram limit {actual} is below minimum {minimum}")
+            }
+            Self::UdpDatagramTooLarge { actual, maximum } => write!(
+                f,
+                "UDP datagram limit {actual} exceeds wire maximum {maximum}"
+            ),
+        }
     }
 }
 
 impl Error for LimitsError {}
 
 #[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for Limits {
+impl<'de> Deserialize<'de> for TcpLimits {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct WireLimits {
-            max_avl_wire_bytes: usize,
-            max_codec12_wire_bytes: usize,
-            max_udp_wire_bytes: usize,
+            max_avl_frame_bytes: usize,
+            max_codec12_frame_bytes: usize,
         }
 
         let value = WireLimits::deserialize(deserializer)?;
-        Self::new(
-            value.max_avl_wire_bytes,
-            value.max_codec12_wire_bytes,
-            value.max_udp_wire_bytes,
-        )
-        .map_err(serde::de::Error::custom)
+        Self::new(value.max_avl_frame_bytes, value.max_codec12_frame_bytes)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for UdpLimits {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct WireLimits {
+            max_datagram_bytes: usize,
+        }
+        let value = WireLimits::deserialize(deserializer)?;
+        Self::new(value.max_datagram_bytes).map_err(serde::de::Error::custom)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// A validated 15-digit International Mobile Equipment Identity.
 ///
-/// The fixed-size representation prevents a parsed or deserialized `Imei` from
+/// The fixed-size representation prevents a decoded or deserialized `Imei` from
 /// carrying the wrong length or non-decimal bytes. Its [`Display`](fmt::Display)
 /// implementation reveals the identifier, so avoid logging it unintentionally.
 pub struct Imei([u8; 15]);
@@ -336,10 +494,9 @@ impl Imei {
     ///
     /// Returns [`ImeiError`] if any byte is not in `0..=9`.
     pub fn new(digits: [u8; 15]) -> Result<Self, ImeiError> {
-        if digits.iter().all(u8::is_ascii_digit) {
-            Ok(Self(digits))
-        } else {
-            Err(ImeiError)
+        match digits.iter().position(|digit| !digit.is_ascii_digit()) {
+            Some(index) => Err(ImeiError::InvalidDigit { index }),
+            None => Ok(Self(digits)),
         }
     }
 
@@ -366,18 +523,38 @@ impl TryFrom<&str> for Imei {
     type Error = ImeiError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let digits: [u8; 15] = value.as_bytes().try_into().map_err(|_| ImeiError)?;
+        let digits: [u8; 15] =
+            value
+                .as_bytes()
+                .try_into()
+                .map_err(|_| ImeiError::InvalidLength {
+                    actual: value.len(),
+                })?;
         Self::new(digits)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Error returned when an IMEI is not exactly 15 ASCII digits.
-pub struct ImeiError;
+pub enum ImeiError {
+    /// The value does not contain exactly 15 bytes.
+    InvalidLength {
+        /// Bytes supplied by the caller.
+        actual: usize,
+    },
+    /// A byte at the given zero-based index is not an ASCII digit.
+    InvalidDigit {
+        /// Zero-based index of the invalid byte.
+        index: usize,
+    },
+}
 
 impl fmt::Display for ImeiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("IMEI must contain exactly 15 ASCII digits")
+        match self {
+            Self::InvalidLength { actual } => write!(f, "IMEI length is {actual}, expected 15"),
+            Self::InvalidDigit { index } => write!(f, "IMEI contains a non-digit at index {index}"),
+        }
     }
 }
 
@@ -418,9 +595,11 @@ impl AvlTimestamp {
         self.0
     }
 
-    /// Converts to [`SystemTime`], or returns `None` if the platform range overflows.
-    pub fn to_system_time(self) -> Option<SystemTime> {
-        UNIX_EPOCH.checked_add(Duration::from_millis(self.0))
+    /// Converts to [`SystemTime`].
+    pub fn to_system_time(self) -> Result<SystemTime, TimestampError> {
+        UNIX_EPOCH
+            .checked_add(Duration::from_millis(self.0))
+            .ok_or(TimestampError::OutOfRange)
     }
 
     /// Converts a [`SystemTime`] without truncating a negative timestamp.
@@ -435,7 +614,7 @@ impl AvlTimestamp {
     pub fn from_system_time(value: SystemTime) -> Result<Self, TimestampError> {
         let duration = value
             .duration_since(UNIX_EPOCH)
-            .map_err(TimestampError::BeforeUnixEpoch)?;
+            .map_err(|_| TimestampError::BeforeUnixEpoch)?;
         let milliseconds = duration
             .as_millis()
             .try_into()
@@ -444,11 +623,11 @@ impl AvlTimestamp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Failure converting a time value into [`AvlTimestamp`].
 pub enum TimestampError {
     /// The input precedes the Unix epoch and cannot be represented by the wire type.
-    BeforeUnixEpoch(SystemTimeError),
+    BeforeUnixEpoch,
     /// The elapsed millisecond count does not fit in the wire type.
     OutOfRange,
 }
@@ -456,43 +635,36 @@ pub enum TimestampError {
 impl fmt::Display for TimestampError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BeforeUnixEpoch(_) => f.write_str("timestamp is before the Unix epoch"),
+            Self::BeforeUnixEpoch => f.write_str("timestamp is before the Unix epoch"),
             Self::OutOfRange => f.write_str("timestamp milliseconds do not fit in u64"),
         }
     }
 }
 
-impl Error for TimestampError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::BeforeUnixEpoch(error) => Some(error),
-            Self::OutOfRange => None,
-        }
-    }
-}
+impl Error for TimestampError {}
 
 #[cfg(feature = "chrono")]
 impl TryFrom<AvlTimestamp> for chrono::DateTime<chrono::Utc> {
-    type Error = &'static str;
+    type Error = TimestampError;
 
     fn try_from(value: AvlTimestamp) -> Result<Self, Self::Error> {
         use chrono::TimeZone;
         chrono::Utc
-            .timestamp_millis_opt(value.0.try_into().map_err(|_| "timestamp out of range")?)
+            .timestamp_millis_opt(value.0.try_into().map_err(|_| TimestampError::OutOfRange)?)
             .single()
-            .ok_or("timestamp out of range")
+            .ok_or(TimestampError::OutOfRange)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl TryFrom<chrono::DateTime<chrono::Utc>> for AvlTimestamp {
-    type Error = &'static str;
+    type Error = TimestampError;
 
     fn try_from(value: chrono::DateTime<chrono::Utc>) -> Result<Self, Self::Error> {
         let milliseconds = value
             .timestamp_millis()
             .try_into()
-            .map_err(|_| "timestamp is before the Unix epoch")?;
+            .map_err(|_| TimestampError::BeforeUnixEpoch)?;
         Ok(Self(milliseconds))
     }
 }
@@ -612,7 +784,7 @@ pub struct IoElement {
 /// GPS data embedded in one AVL record.
 ///
 /// Coordinates retain the exact signed wire integers, scaled by 10,000,000.
-/// The parser intentionally preserves anomalous coordinates; call
+/// The decoder intentionally preserves anomalous coordinates; call
 /// [`GpsElement::is_position_valid`] before treating them as a fix.
 pub struct GpsElement {
     /// Signed longitude scaled by 10,000,000.
@@ -678,7 +850,7 @@ pub struct AvlRecord {
 /// A validated owned packet of AVL records.
 ///
 /// Construction is private because codec widths, record counts, and IO counts
-/// must agree. Obtain packets from the TCP or UDP parsers.
+/// must agree. Obtain packets from the TCP or UDP decoders.
 pub struct AvlPacket {
     codec: AvlCodec,
     records: Vec<AvlRecord>,
@@ -751,12 +923,13 @@ impl Codec12Message {
 
     /// Attempts to view one payload as UTF-8 without changing its byte storage.
     ///
-    /// Returns `None` when `index` is out of bounds, `Some(Err(_))` for a binary
-    /// payload that is not UTF-8, and `Some(Ok(_))` for valid text.
-    pub fn payload_as_str(&self, index: usize) -> Option<Result<&str, Utf8Error>> {
+    /// Returns `Ok(None)` when `index` is out of bounds and an error only when
+    /// the selected payload is not valid UTF-8.
+    pub fn payload_as_str(&self, index: usize) -> Result<Option<&str>, Utf8Error> {
         self.payloads()
             .get(index)
             .map(|payload| std::str::from_utf8(payload))
+            .transpose()
     }
 }
 
@@ -766,6 +939,7 @@ impl Codec12Message {
 pub struct Codec12Packet {
     message: Codec12Message,
     count_status: CountStatus,
+    counts_match: bool,
 }
 
 impl Codec12Packet {
@@ -779,10 +953,20 @@ impl Codec12Packet {
         self.count_status
     }
 
-    pub(crate) fn from_parts(message: Codec12Message, count_status: CountStatus) -> Self {
+    /// Returns whether both wire quantities equal the decoded message count.
+    pub const fn counts_match(&self) -> bool {
+        self.counts_match
+    }
+
+    pub(crate) fn from_parts(
+        message: Codec12Message,
+        count_status: CountStatus,
+        counts_match: bool,
+    ) -> Self {
         Self {
             message,
             count_status,
+            counts_match,
         }
     }
 }

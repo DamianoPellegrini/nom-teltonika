@@ -1,9 +1,11 @@
 use std::{error::Error, fmt, io};
 
 use crate::{
-    encode_impl::{encode_avl_ack, encode_avl_nack, encode_codec12_commands, encode_imei_approval},
-    parser_impl::parse_tcp_frame_with_limits,
-    protocol_impl::{Frame, Limits, LimitsError, ParseError},
+    decoder_impl::decode_tcp_frame_with_limits,
+    encoder_impl::{
+        EncodeError, encode_avl_ack, encode_avl_nack, encode_codec12_commands, encode_imei_approval,
+    },
+    protocol_impl::{DecodeError, Frame, TcpLimits},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,8 +16,8 @@ use crate::{
 pub struct StreamConfig {
     /// Bytes requested from the underlying stream per read; defaults to 4 KiB.
     read_size: usize,
-    /// Maximum complete wire sizes accepted by the parser.
-    limits: Limits,
+    /// Maximum complete wire sizes accepted by the decoder.
+    limits: TcpLimits,
 }
 
 impl StreamConfig {
@@ -24,7 +26,7 @@ impl StreamConfig {
     /// # Errors
     ///
     /// Returns [`StreamConfigError`] for a zero read size or invalid limits.
-    pub fn new(read_size: usize, limits: Limits) -> Result<Self, StreamConfigError> {
+    pub fn new(read_size: usize, limits: TcpLimits) -> Result<Self, StreamConfigError> {
         let config = Self { read_size, limits };
         config.validate()?;
         Ok(config)
@@ -35,8 +37,8 @@ impl StreamConfig {
         self.read_size
     }
 
-    /// Returns the maximum complete wire sizes accepted by the parser.
-    pub const fn limits(self) -> Limits {
+    /// Returns the maximum complete wire sizes accepted by the decoder.
+    pub const fn limits(self) -> TcpLimits {
         self.limits
     }
 
@@ -44,9 +46,7 @@ impl StreamConfig {
         if self.read_size == 0 {
             return Err(StreamConfigError::ZeroReadSize);
         }
-        self.limits
-            .validate()
-            .map_err(StreamConfigError::InvalidLimits)
+        Ok(())
     }
 }
 
@@ -54,7 +54,7 @@ impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             read_size: 4 * 1024,
-            limits: Limits::default(),
+            limits: TcpLimits::default(),
         }
     }
 }
@@ -64,15 +64,12 @@ impl Default for StreamConfig {
 pub enum StreamConfigError {
     /// The read chunk size is zero, so the stream could never make progress.
     ZeroReadSize,
-    /// One or more protocol wire-size limits are invalid.
-    InvalidLimits(LimitsError),
 }
 
 impl fmt::Display for StreamConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroReadSize => f.write_str("stream read size must be non-zero"),
-            Self::InvalidLimits(error) => write!(f, "invalid stream limits: {error}"),
         }
     }
 }
@@ -81,45 +78,89 @@ impl Error for StreamConfigError {}
 
 #[derive(Debug)]
 #[non_exhaustive]
-/// Failure reading, parsing, or writing through [`TeltonikaStream`].
-pub enum StreamError {
+/// Failure reading and decoding through [`TeltonikaStream`].
+pub enum StreamReadError {
     /// The underlying stream reached EOF at a frame boundary.
     Closed,
     /// The underlying stream reached EOF in the middle of a frame.
     Truncated {
         /// Unconsumed bytes retained when EOF was observed.
         buffered: usize,
+        /// Last exact additional-byte requirement reported by the decoder.
+        needed: std::num::NonZeroUsize,
     },
-    /// The parser rejected a complete frame or encountered fatal framing.
-    Parse(ParseError),
-    /// The underlying reader or writer failed.
+    /// The decoder rejected a complete frame or encountered fatal framing.
+    Decode(DecodeError),
+    /// The underlying reader failed.
     Io(io::Error),
 }
 
-impl fmt::Display for StreamError {
+impl fmt::Display for StreamReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Closed => f.write_str("stream closed at a frame boundary"),
-            Self::Truncated { buffered } => {
-                write!(f, "stream closed with {buffered} buffered byte(s)")
+            Self::Truncated { buffered, needed } => {
+                write!(
+                    f,
+                    "stream closed with {buffered} buffered byte(s), needing {needed} more"
+                )
             }
-            Self::Parse(error) => error.fmt(f),
+            Self::Decode(error) => error.fmt(f),
             Self::Io(error) => error.fmt(f),
         }
     }
 }
 
-impl Error for StreamError {
+impl Error for StreamReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Parse(error) => Some(error),
+            Self::Decode(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Closed | Self::Truncated { .. } => None,
         }
     }
 }
 
-impl From<io::Error> for StreamError {
+impl From<io::Error> for StreamReadError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+/// Failure encoding or writing a Codec 12 command.
+#[derive(Debug)]
+pub enum CommandWriteError {
+    /// Command input cannot be represented as a Codec 12 frame.
+    Encode(EncodeError),
+    /// The underlying writer failed.
+    Io(io::Error),
+}
+
+impl fmt::Display for CommandWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encode(error) => error.fmt(f),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for CommandWriteError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Encode(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+impl From<EncodeError> for CommandWriteError {
+    fn from(value: EncodeError) -> Self {
+        Self::Encode(value)
+    }
+}
+
+impl From<io::Error> for CommandWriteError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
     }
@@ -144,12 +185,12 @@ impl From<io::Error> for StreamError {
 /// ```
 /// use std::io::Cursor;
 /// use nom_teltonika::{
-///     encode::encode_codec12_command,
+///     encoder::encode_codec12_command,
 ///     protocol::Frame,
 ///     stream::TeltonikaStream,
 /// };
 ///
-/// let bytes = encode_codec12_command(b"getinfo");
+/// let bytes = encode_codec12_command(b"getinfo").unwrap();
 /// let mut stream = TeltonikaStream::new(Cursor::new(bytes));
 /// let Frame::Codec12(packet) = stream.read_frame().unwrap() else {
 ///     panic!("expected Codec 12");
@@ -160,7 +201,6 @@ pub struct TeltonikaStream<S> {
     inner: S,
     config: StreamConfig,
     receive: ReceiveBuffer,
-    read_chunk: Vec<u8>,
 }
 
 impl<S> TeltonikaStream<S> {
@@ -180,7 +220,6 @@ impl<S> TeltonikaStream<S> {
             inner,
             config,
             receive: ReceiveBuffer::new(config.read_size),
-            read_chunk: vec![0; config.read_size],
         })
     }
 
@@ -203,6 +242,39 @@ impl<S> TeltonikaStream<S> {
     pub const fn config(&self) -> StreamConfig {
         self.config
     }
+
+    fn decode_buffered(&mut self) -> Result<BufferedFrame, StreamReadError> {
+        match decode_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
+            Ok(decoded) => {
+                self.receive.consume(decoded.consumed);
+                #[cfg(feature = "tracing")]
+                tracing::trace!(
+                    consumed = decoded.consumed,
+                    buffered = self.receive.len(),
+                    codec_id = decoded.value.codec_id(),
+                    "decoded TCP frame"
+                );
+                Ok(BufferedFrame::Decoded(decoded.value))
+            }
+            Err(DecodeError::Incomplete { needed }) => Ok(BufferedFrame::Need(needed)),
+            Err(error @ DecodeError::Rejected { consumed, .. }) => {
+                self.receive.consume(consumed);
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    consumed,
+                    buffered = self.receive.len(),
+                    "rejected delimited TCP frame"
+                );
+                Err(StreamReadError::Decode(error))
+            }
+            Err(error) => Err(StreamReadError::Decode(error)),
+        }
+    }
+}
+
+enum BufferedFrame {
+    Decoded(Frame),
+    Need(std::num::NonZeroUsize),
 }
 
 impl<S: io::Read> TeltonikaStream<S> {
@@ -213,51 +285,31 @@ impl<S: io::Read> TeltonikaStream<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamError::Closed`] for EOF at a frame boundary,
-    /// [`StreamError::Truncated`] for EOF with partial data, and
-    /// [`StreamError::Parse`] or [`StreamError::Io`] for parser and transport
+    /// Returns [`StreamReadError::Closed`] for EOF at a frame boundary,
+    /// [`StreamReadError::Truncated`] for EOF with partial data, and
+    /// [`StreamReadError::Decode`] or [`StreamReadError::Io`] for decoder and transport
     /// failures. A rejected complete frame is consumed before its error is
     /// returned; a fatal framing error remains buffered and should normally end
     /// the connection.
-    pub fn read_frame(&mut self) -> Result<Frame, StreamError> {
+    pub fn read_frame(&mut self) -> Result<Frame, StreamReadError> {
         loop {
-            match parse_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
-                Ok(parsed) => {
-                    self.receive.consume(parsed.consumed);
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!(
-                        consumed = parsed.consumed,
-                        buffered = self.receive.len(),
-                        codec_id = parsed.value.codec_id(),
-                        "decoded TCP frame"
-                    );
-                    return Ok(parsed.value);
-                }
-                Err(ParseError::Incomplete { .. }) => {}
-                Err(error @ ParseError::Rejected { consumed, .. }) => {
-                    self.receive.consume(consumed);
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!(
-                        consumed,
-                        buffered = self.receive.len(),
-                        "rejected delimited TCP frame"
-                    );
-                    return Err(StreamError::Parse(error));
-                }
-                Err(error) => return Err(StreamError::Parse(error)),
-            }
+            let needed = match self.decode_buffered()? {
+                BufferedFrame::Decoded(frame) => return Ok(frame),
+                BufferedFrame::Need(needed) => needed,
+            };
 
-            let read = self.inner.read(&mut self.read_chunk)?;
+            let read = self.inner.read(self.receive.writable(needed.get()))?;
             if read == 0 {
                 return if self.receive.is_empty() {
-                    Err(StreamError::Closed)
+                    Err(StreamReadError::Closed)
                 } else {
-                    Err(StreamError::Truncated {
+                    Err(StreamReadError::Truncated {
                         buffered: self.receive.len(),
+                        needed,
                     })
                 };
             }
-            self.receive.extend(&self.read_chunk[..read]);
+            self.receive.commit_read(read);
             #[cfg(feature = "tracing")]
             tracing::trace!(read, buffered = self.receive.len(), "read TCP bytes");
         }
@@ -268,27 +320,27 @@ impl<S: io::Write> TeltonikaStream<S> {
     /// Writes and flushes the one-byte IMEI acceptance decision.
     ///
     /// Send `true` before expecting AVL data from an accepted TCP device.
-    pub fn write_imei_approval(&mut self, accepted: bool) -> Result<(), StreamError> {
+    pub fn write_imei_approval(&mut self, accepted: bool) -> io::Result<()> {
         self.write_flushed(&encode_imei_approval(accepted))
     }
 
     /// Writes and flushes the number of AVL records accepted by the application.
     ///
-    /// The count is an application decision; parsing a packet does not imply
+    /// The count is an application decision; decoding a packet does not imply
     /// durable acceptance.
-    pub fn write_avl_ack(&mut self, accepted_records: u32) -> Result<(), StreamError> {
+    pub fn write_avl_ack(&mut self, accepted_records: u32) -> io::Result<()> {
         self.write_flushed(&encode_avl_ack(accepted_records))
     }
 
     /// Writes and flushes a zero-record AVL negative acknowledgment.
-    pub fn write_avl_nack(&mut self) -> Result<(), StreamError> {
+    pub fn write_avl_nack(&mut self) -> io::Result<()> {
         self.write_flushed(&encode_avl_nack())
     }
 
     /// Encodes, writes, and flushes one arbitrary-byte Codec 12 command.
     ///
     /// The device must have an open GPRS session for Codec 12 commands.
-    pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> Result<(), StreamError> {
+    pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> Result<(), CommandWriteError> {
         self.write_commands([command.as_ref()])
     }
 
@@ -301,11 +353,13 @@ impl<S: io::Write> TeltonikaStream<S> {
     pub fn write_commands<'a>(
         &mut self,
         commands: impl IntoIterator<Item = &'a [u8]>,
-    ) -> Result<(), StreamError> {
-        self.write_flushed(&encode_codec12_commands(commands))
+    ) -> Result<(), CommandWriteError> {
+        let encoded = encode_codec12_commands(commands)?;
+        self.write_flushed(&encoded)?;
+        Ok(())
     }
 
-    fn write_flushed(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+    fn write_flushed(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.inner.write_all(bytes)?;
         self.inner.flush()?;
         #[cfg(feature = "tracing")]
@@ -322,46 +376,26 @@ impl<S: tokio::io::AsyncRead + Unpin> TeltonikaStream<S> {
     /// bytes already read remain in the wrapper's receive buffer for the next
     /// call. It otherwise follows [`Self::read_frame`]'s error and consumption
     /// contract.
-    pub async fn read_frame_async(&mut self) -> Result<Frame, StreamError> {
+    pub async fn read_frame_async(&mut self) -> Result<Frame, StreamReadError> {
         use tokio::io::AsyncReadExt;
 
         loop {
-            match parse_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
-                Ok(parsed) => {
-                    self.receive.consume(parsed.consumed);
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!(
-                        consumed = parsed.consumed,
-                        buffered = self.receive.len(),
-                        codec_id = parsed.value.codec_id(),
-                        "decoded TCP frame"
-                    );
-                    return Ok(parsed.value);
-                }
-                Err(ParseError::Incomplete { .. }) => {}
-                Err(error @ ParseError::Rejected { consumed, .. }) => {
-                    self.receive.consume(consumed);
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!(
-                        consumed,
-                        buffered = self.receive.len(),
-                        "rejected delimited TCP frame"
-                    );
-                    return Err(StreamError::Parse(error));
-                }
-                Err(error) => return Err(StreamError::Parse(error)),
-            }
-            let read = self.inner.read(&mut self.read_chunk).await?;
+            let needed = match self.decode_buffered()? {
+                BufferedFrame::Decoded(frame) => return Ok(frame),
+                BufferedFrame::Need(needed) => needed,
+            };
+            let read = self.inner.read(self.receive.writable(needed.get())).await?;
             if read == 0 {
                 return if self.receive.is_empty() {
-                    Err(StreamError::Closed)
+                    Err(StreamReadError::Closed)
                 } else {
-                    Err(StreamError::Truncated {
+                    Err(StreamReadError::Truncated {
                         buffered: self.receive.len(),
+                        needed,
                     })
                 };
             }
-            self.receive.extend(&self.read_chunk[..read]);
+            self.receive.commit_read(read);
             #[cfg(feature = "tracing")]
             tracing::trace!(
                 read,
@@ -378,7 +412,7 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     ///
     /// This operation is not cancellation-safe. Close the connection after a
     /// cancelled or otherwise partial write.
-    pub async fn write_imei_approval_async(&mut self, accepted: bool) -> Result<(), StreamError> {
+    pub async fn write_imei_approval_async(&mut self, accepted: bool) -> io::Result<()> {
         self.write_flushed_async(&encode_imei_approval(accepted))
             .await
     }
@@ -387,7 +421,7 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     ///
     /// This operation is not cancellation-safe. Close the connection after a
     /// cancelled or otherwise partial write.
-    pub async fn write_avl_ack_async(&mut self, accepted_records: u32) -> Result<(), StreamError> {
+    pub async fn write_avl_ack_async(&mut self, accepted_records: u32) -> io::Result<()> {
         self.write_flushed_async(&encode_avl_ack(accepted_records))
             .await
     }
@@ -396,7 +430,7 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     ///
     /// This operation is not cancellation-safe. Close the connection after a
     /// cancelled or otherwise partial write.
-    pub async fn write_avl_nack_async(&mut self) -> Result<(), StreamError> {
+    pub async fn write_avl_nack_async(&mut self) -> io::Result<()> {
         self.write_flushed_async(&encode_avl_nack()).await
     }
 
@@ -407,7 +441,7 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     pub async fn write_command_async(
         &mut self,
         command: impl AsRef<[u8]>,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), CommandWriteError> {
         self.write_commands_async([command.as_ref()]).await
     }
 
@@ -418,12 +452,13 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     pub async fn write_commands_async<'a>(
         &mut self,
         commands: impl IntoIterator<Item = &'a [u8]>,
-    ) -> Result<(), StreamError> {
-        self.write_flushed_async(&encode_codec12_commands(commands))
-            .await
+    ) -> Result<(), CommandWriteError> {
+        let encoded = encode_codec12_commands(commands)?;
+        self.write_flushed_async(&encoded).await?;
+        Ok(())
     }
 
-    async fn write_flushed_async(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+    async fn write_flushed_async(&mut self, bytes: &[u8]) -> io::Result<()> {
         use tokio::io::AsyncWriteExt;
         self.inner.write_all(bytes).await?;
         self.inner.flush().await?;
@@ -439,51 +474,67 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
 struct ReceiveBuffer {
     storage: Vec<u8>,
     head: usize,
+    tail: usize,
     read_size: usize,
 }
 
 impl ReceiveBuffer {
     fn new(read_size: usize) -> Self {
         Self {
-            storage: Vec::with_capacity(read_size),
+            storage: vec![0; read_size],
             head: 0,
+            tail: 0,
             read_size,
         }
     }
 
     fn readable(&self) -> &[u8] {
-        &self.storage[self.head..]
+        &self.storage[self.head..self.tail]
     }
     fn len(&self) -> usize {
-        self.storage.len() - self.head
+        self.tail - self.head
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    fn extend(&mut self, bytes: &[u8]) {
-        if self.head == self.storage.len() {
-            self.storage.clear();
+    fn writable(&mut self, needed: usize) -> &mut [u8] {
+        if self.head == self.tail {
             self.head = 0;
+            self.tail = 0;
         } else if self.head > 0
-            && self.head >= self.storage.capacity() / 2
+            && self.head >= self.storage.len() / 2
             && self.len() <= self.read_size
         {
-            // Parsing advances `head` instead of shifting after every frame.
+            // Decoding advances `head` instead of shifting after every frame.
             // Compact only after enough prefix space is wasted and the live tail
             // is small, amortizing copies on streams containing many frames.
-            self.storage.copy_within(self.head.., 0);
-            self.storage.truncate(self.len());
+            self.storage.copy_within(self.head..self.tail, 0);
+            self.tail = self.len();
             self.head = 0;
         }
-        self.storage.extend_from_slice(bytes);
+
+        let read_length = needed.min(self.read_size);
+        let required = self
+            .tail
+            .checked_add(read_length)
+            .expect("receive buffer size overflow");
+        if self.storage.len() < required {
+            self.storage.resize(required, 0);
+        }
+        &mut self.storage[self.tail..required]
+    }
+
+    fn commit_read(&mut self, length: usize) {
+        assert!(length <= self.read_size, "reader exceeded provided buffer");
+        self.tail += length;
     }
 
     fn consume(&mut self, length: usize) {
         self.head += length;
-        if self.head == self.storage.len() {
-            self.storage.clear();
+        if self.head == self.tail {
             self.head = 0;
+            self.tail = 0;
         }
     }
 }

@@ -8,7 +8,7 @@ use std::{
 };
 
 use common::*;
-use nom_teltonika::parser::{parse_tcp_frame, parse_udp_datagram};
+use nom_teltonika::decoder::{decode_tcp_frame, decode_udp_datagram};
 
 struct BufferWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -35,8 +35,8 @@ fn tracing_reports_structure_without_sensitive_wire_values() {
         .finish();
 
     tracing::subscriber::with_default(subscriber, || {
-        parse_tcp_frame(&bytes(CODEC12_COMMAND)).unwrap();
-        parse_udp_datagram(&bytes(UDP_CODEC8)).unwrap();
+        decode_tcp_frame(&bytes(CODEC12_COMMAND)).unwrap();
+        decode_udp_datagram(&bytes(UDP_CODEC8)).unwrap();
     });
 
     let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();

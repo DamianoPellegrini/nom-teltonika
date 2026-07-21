@@ -3,7 +3,7 @@ mod common;
 use std::io::Cursor;
 
 use common::*;
-use nom_teltonika::{parser::*, protocol::*, stream::*};
+use nom_teltonika::{decoder::*, protocol::*, stream::*};
 
 #[test]
 fn should_read_frame_across_every_stream_read_size() {
@@ -24,11 +24,14 @@ fn should_read_frame_across_every_stream_read_size() {
 #[test]
 fn should_distinguish_closed_from_truncated_stream() {
     let mut closed = TeltonikaStream::new(Cursor::new(Vec::<u8>::new()));
-    assert!(matches!(closed.read_frame(), Err(StreamError::Closed)));
-    let mut truncated = TeltonikaStream::new(Cursor::new(bytes(&CODEC8[..20])));
+    assert!(matches!(closed.read_frame(), Err(StreamReadError::Closed)));
+    let partial = bytes(&CODEC8[..20]);
+    let buffered = partial.len();
+    let mut truncated = TeltonikaStream::new(Cursor::new(partial));
     assert!(matches!(
         truncated.read_frame(),
-        Err(StreamError::Truncated { .. })
+        Err(StreamReadError::Truncated { buffered: actual, needed })
+            if actual == buffered && needed.get() == bytes(CODEC8).len() - buffered
     ));
 }
 
@@ -41,7 +44,7 @@ fn should_consume_rejection_before_reading_next_valid_frame() {
     let mut stream = TeltonikaStream::new(Cursor::new(rejected));
     assert!(matches!(
         stream.read_frame(),
-        Err(StreamError::Parse(ParseError::Rejected { .. }))
+        Err(StreamReadError::Decode(DecodeError::Rejected { .. }))
     ));
     assert!(matches!(stream.read_frame().unwrap(), Frame::Codec12(_)));
 }
@@ -60,15 +63,15 @@ fn should_flush_protocol_writes() {
 #[test]
 fn should_reject_zero_or_incoherent_stream_configuration() {
     assert!(matches!(
-        StreamConfig::new(0, Limits::default()),
+        StreamConfig::new(0, TcpLimits::default()),
         Err(StreamConfigError::ZeroReadSize)
     ));
-    assert!(Limits::new(14, 16, 23).is_err());
+    assert!(TcpLimits::new(44, 20).is_err());
 }
 
 #[test]
 fn should_expose_validated_stream_configuration() {
-    let limits = Limits::new(1280, 65_536, 2048).unwrap();
+    let limits = TcpLimits::new(1280, 65_536).unwrap();
     let config = StreamConfig::new(8192, limits).unwrap();
 
     assert_eq!(config.read_size(), 8192);

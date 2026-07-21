@@ -3,12 +3,12 @@ name = "nom-teltonika"
 version = "0.1.6"
 edition = "2024"
 rust-version = "1.85"
-description = "A std-first Teltonika binary protocol parser"
+description = "A dependency-free-core Teltonika binary protocol decoder and encoder"
 readme = "README.md"
 repository = "https://github.com/DamianoPellegrini/nom-teltonika"
 license = "MIT"
-keywords = ["parser", "library", "binary", "teltonika", "protocol"]
-categories = ["encoding", "parser-implementations"]
+keywords = ["decoder", "library", "binary", "teltonika", "protocol"]
+categories = ["encoding", "decoder-implementations"]
 publish = true
 include = [
     "src/**",
@@ -45,7 +45,7 @@ tokio = { version = "1.29.1", features = ["io-util", "net", "macros", "rt"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = ["fmt"] }
 
 [[bench]]
-name = "parser"
+name = "decoder"
 harness = false
 
 [package.metadata.docs.rs]

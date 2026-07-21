@@ -1,4 +1,4 @@
-# nom-teltonika, easily parse the teltonika protocol
+# nom-teltonika
 
 [![crates.io version](https://img.shields.io/crates/v/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
 [![crates.io downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
@@ -6,7 +6,7 @@
 [![CI](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml)
 [![license](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
 
-Parse and encode Teltonika TCP and UDP packets in Rust.
+Decode and encode Teltonika TCP and UDP packets in Rust with a dependency-free core.
 
 Supported protocols:
 
@@ -25,32 +25,32 @@ nom-teltonika = "0.2"
 
 No features are enabled by default.
 
-## Parse a packet
+## Decode a packet
 
-Parsers accept a byte slice and return an owned value with the number of bytes
+TCP decoders accept a byte slice and return an owned value with the number of bytes
 consumed.
 
 ```rust
 use nom_teltonika::{
-    encode::encode_codec12_command,
-    parser::parse_tcp_frame,
+    encoder::encode_codec12_command,
+    decoder::decode_tcp_frame,
     protocol::Frame,
 };
 
-let bytes = encode_codec12_command(b"getinfo");
-let parsed = parse_tcp_frame(&bytes)?;
+let bytes = encode_codec12_command(b"getinfo")?;
+let decoded = decode_tcp_frame(&bytes)?;
 
-let Frame::Codec12(packet) = parsed.value else {
+let Frame::Codec12(packet) = decoded.value else {
     panic!("expected Codec 12");
 };
 
-assert_eq!(packet.message().payload_as_str(0).unwrap()?, "getinfo");
-assert_eq!(parsed.consumed, bytes.len());
+assert_eq!(packet.message().payload_as_str(0)?.unwrap(), "getinfo");
+assert_eq!(decoded.consumed, bytes.len());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Use `parser::parse_imei` for the TCP handshake and
-`parser::parse_udp_datagram` for UDP packets.
+Use `decoder::decode_imei` for the TCP handshake. `decode_udp_datagram` requires
+exactly one complete datagram and returns `UdpDatagram` directly.
 
 ## Handle a TCP connection
 
@@ -60,7 +60,7 @@ The stream never acknowledges packets automatically.
 ```no_run
 use std::{io::Read, net::TcpListener};
 use nom_teltonika::{
-    parser::parse_imei,
+    decoder::decode_imei,
     protocol::Frame,
     stream::TeltonikaStream,
 };
@@ -70,7 +70,7 @@ let (mut socket, _) = listener.accept()?;
 
 let mut handshake = [0_u8; 17];
 socket.read_exact(&mut handshake)?;
-let imei = parse_imei(&handshake)?.value;
+let imei = decode_imei(&handshake)?.value;
 
 let accepted = imei.as_str() == "356307042441013";
 let mut stream = TeltonikaStream::new(socket);
@@ -117,20 +117,22 @@ socket.send_ack_to(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Handle parser errors
+## Handle decoding errors
 
 | Error | Action |
 | --- | --- |
-| `ParseError::Incomplete` | Keep the entire buffer and read more bytes. |
-| `ParseError::Rejected` | Discard the reported `consumed` bytes. You may send a NACK. |
-| `ParseError::Fatal` | Stop using the connection unless you have a resynchronization strategy. |
+| `DecodeError::Incomplete { needed }` | Keep the entire buffer and read at least `needed` more bytes. |
+| `DecodeError::Rejected` | Discard the reported `consumed` bytes. You may send a NACK. |
+| `DecodeError::Fatal` | Stop using the connection unless you have a resynchronization strategy. |
 
-`TeltonikaStream` returns `StreamError::Closed` at a frame boundary and
-`StreamError::Truncated` when the connection closes during a frame.
+`TeltonikaStream` returns `StreamReadError::Closed` at a frame boundary and
+`StreamReadError::Truncated { buffered, needed }` when the connection closes
+during a frame. UDP decoding uses `UdpDecodeError`; a failure invalidates only
+the current datagram.
 
 ## Encode responses and commands
 
-The `encode` module provides functions for:
+The `encoder` module provides pure functions for:
 
 - IMEI approval;
 - TCP AVL ACK and NACK;
@@ -138,13 +140,16 @@ The `encode` module provides functions for:
 - Codec 12 command frames and batches.
 
 Codec 12 payloads are bytes. Use `payload_as_str` only when you expect UTF-8.
+Codec 12 encoders return `EncodeError` for empty, oversized, or
+unrepresentable batches. Stream ACK methods return `io::Result<()>`, while
+Codec 12 command methods return `CommandWriteError`.
 
 ## Features
 
 | Feature | Adds |
 | --- | --- |
 | `tokio` | Async TCP stream methods and UDP socket support. |
-| `serde` | Serialization of wire models and validated deserialization of `Imei` and `Limits`. |
+| `serde` | Serialization of wire models and validated deserialization of `Imei`, `TcpLimits`, and `UdpLimits`. |
 | `chrono` | Conversion between `AvlTimestamp` and `DateTime<Utc>`. |
 | `tracing` | Framing events without IMEI, coordinates, commands, or payloads. |
 
@@ -165,3 +170,9 @@ See the [0.2 migration guide](docs/migration-0.2.md) when upgrading from 0.1.
 Protocol details are available in Teltonika's official
 [Data Sending Protocols](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols)
 documentation.
+
+Limit defaults and framing rules were checked against Teltonika's
+[Data Sending Protocols](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols)
+and [Codec](https://wiki.teltonika-gps.com/view/Codec) documentation on
+2026-07-21. The 64 KiB Codec 12 and 2048-byte UDP defaults are local safety
+policies; configure lower model-specific limits explicitly when required.

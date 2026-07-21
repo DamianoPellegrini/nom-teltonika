@@ -1,132 +1,114 @@
 use std::num::NonZeroUsize;
 
+use crate::checksum::crc16;
 use crate::protocol_impl::{
     AvlCodec, AvlPacket, AvlRecord, AvlTimestamp, Codec12Message, Codec12Packet, CountStatus,
-    FatalReason, Frame, GenerationType, GpsElement, Imei, IoElement, IoId, IoValue, Limits,
-    ParseError, Parsed, Priority, RejectionReason, UdpDatagram,
+    DecodeError, Decoded, FatalReason, Frame, GenerationType, GpsElement, Imei, IoElement, IoId,
+    IoValue, Priority, RejectionReason, TcpLimits, UdpDatagram, UdpDecodeError, UdpLimits,
 };
 
-/// Computes the CRC-16/IBM value used by Teltonika TCP frames.
-///
-/// Pass exactly the bytes from the codec ID through the second record or
-/// command count. The TCP preamble, data length, and four-byte CRC field are
-/// outside the checksum coverage.
-///
-/// # Examples
-///
-/// ```
-/// use nom_teltonika::parser::crc16;
-///
-/// assert_eq!(crc16(b"123456789"), 0xbb3d);
-/// ```
-pub fn crc16(data: &[u8]) -> u16 {
-    let mut crc = 0u16;
-    for &byte in data {
-        crc ^= u16::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 == 0 {
-                crc >> 1
-            } else {
-                (crc >> 1) ^ 0xa001
-            };
-        }
-    }
-    crc
-}
-
-/// Parses the length-prefixed ASCII IMEI sent at the start of a TCP session.
+/// Decodes the length-prefixed ASCII IMEI sent at the start of a TCP session.
 ///
 /// The result owns the validated 15 decimal digits. Bytes after the handshake
-/// remain untouched and are excluded from [`Parsed::consumed`].
+/// remain untouched and are excluded from [`Decoded::consumed`].
 ///
 /// # Errors
 ///
-/// Returns [`ParseError::Incomplete`] until the declared handshake is present.
-/// A complete handshake is [`ParseError::Rejected`] if its length is not 15 or
-/// if it contains a non-decimal byte; its `consumed` field identifies the
-/// complete handshake that may be discarded.
+/// Returns [`DecodeError::Fatal`] immediately when the two-byte prefix declares
+/// a length other than 15. Returns [`DecodeError::Incomplete`] until all 15
+/// bytes are present and [`DecodeError::Rejected`] for a complete handshake
+/// containing a non-decimal byte.
 ///
 /// # Examples
 ///
 /// ```
-/// use nom_teltonika::parser::parse_imei;
+/// use nom_teltonika::decoder::decode_imei;
 ///
-/// let parsed = parse_imei(b"\x00\x0f356307042441013next").unwrap();
-/// assert_eq!(parsed.value.as_str(), "356307042441013");
-/// assert_eq!(parsed.consumed, 17);
+/// let decoded = decode_imei(b"\x00\x0f356307042441013next").unwrap();
+/// assert_eq!(decoded.value.as_str(), "356307042441013");
+/// assert_eq!(decoded.consumed, 17);
 /// ```
-pub fn parse_imei(input: &[u8]) -> Result<Parsed<Imei>, ParseError> {
+pub fn decode_imei(input: &[u8]) -> Result<Decoded<Imei>, DecodeError> {
     require(input.len(), 2)?;
     let (length, remaining) = input.split_at(2);
     let length = usize::from(u16::from_be_bytes(length.try_into().expect("two bytes")));
+    if length != 15 {
+        return Err(DecodeError::Fatal {
+            offset: 0,
+            reason: FatalReason::InvalidImeiLength {
+                declared: length,
+                expected: 15,
+            },
+        });
+    }
     require(remaining.len(), length)?;
     let (digits, remaining) = remaining.split_at(length);
     let consumed = input.len() - remaining.len();
-    let digits: [u8; 15] = digits.try_into().map_err(|_| ParseError::Rejected {
+    let digits: [u8; 15] = digits.try_into().map_err(|_| DecodeError::Rejected {
         consumed,
         offset: 0,
         reason: RejectionReason::InvalidImei,
     })?;
-    let value = Imei::new(digits).map_err(|_| ParseError::Rejected {
+    let value = Imei::new(digits).map_err(|_| DecodeError::Rejected {
         consumed,
         offset: 2,
         reason: RejectionReason::InvalidImei,
     })?;
-    Ok(Parsed { value, consumed })
+    Ok(Decoded { value, consumed })
 }
 
-/// Parses one TCP AVL or Codec 12 frame using [`Limits::default`].
+/// Decodes one TCP AVL or Codec 12 frame using [`TcpLimits::default`].
 ///
-/// The parser validates the preamble, declared length, codec-specific layout,
+/// The decoder validates the preamble, declared length, codec-specific layout,
 /// duplicate counts, and CRC before returning an owned [`Frame`]. It stops at
 /// the first complete frame when `input` also contains the next frame.
 ///
 /// # Errors
 ///
-/// See [`ParseError`] for the buffering and recovery contract. In particular,
-/// retain all input on [`ParseError::Incomplete`], consume exactly the reported
-/// bytes on [`ParseError::Rejected`], and reset or close the transport after
-/// [`ParseError::Fatal`] unless you have an external resynchronization rule.
+/// See [`DecodeError`] for the buffering and recovery contract. In particular,
+/// retain all input on [`DecodeError::Incomplete`], consume exactly the reported
+/// bytes on [`DecodeError::Rejected`], and reset or close the transport after
+/// [`DecodeError::Fatal`] unless you have an external resynchronization rule.
 ///
 /// # Examples
 ///
 /// ```
-/// use nom_teltonika::{encode::encode_codec12_command, parser::parse_tcp_frame};
+/// use nom_teltonika::{encoder::encode_codec12_command, decoder::decode_tcp_frame};
 ///
-/// let bytes = encode_codec12_command(b"getinfo");
-/// let parsed = parse_tcp_frame(&bytes).unwrap();
-/// assert_eq!(parsed.consumed, bytes.len());
+/// let bytes = encode_codec12_command(b"getinfo").unwrap();
+/// let decoded = decode_tcp_frame(&bytes).unwrap();
+/// assert_eq!(decoded.consumed, bytes.len());
 /// ```
-pub fn parse_tcp_frame(input: &[u8]) -> Result<Parsed<Frame>, ParseError> {
-    parse_tcp_frame_with_limits(input, Limits::default())
+pub fn decode_tcp_frame(input: &[u8]) -> Result<Decoded<Frame>, DecodeError> {
+    decode_tcp_frame_with_limits(input, TcpLimits::default())
 }
 
 /// Parses one TCP frame with caller-provided wire-size limits.
 ///
 /// Use this variant at trust boundaries where limits differ from the defaults.
 /// A declared size above the codec-specific limit fails as soon as the header
-/// and codec ID are available, before the parser waits for or allocates the
+/// and codec ID are available, before the decoder waits for or allocates the
 /// declared payload.
 ///
 /// # Errors
 ///
-/// Returns the same [`ParseError`] variants as [`parse_tcp_frame`], including a
-/// fatal [`crate::parser::FatalReason::FrameTooLarge`] when the declared complete
+/// Returns the same [`DecodeError`] variants as [`decode_tcp_frame`], including a
+/// fatal [`crate::decoder::FatalReason::FrameTooLarge`] when the declared complete
 /// wire size exceeds `limits`.
-pub fn parse_tcp_frame_with_limits(
+pub fn decode_tcp_frame_with_limits(
     input: &[u8],
-    limits: Limits,
-) -> Result<Parsed<Frame>, ParseError> {
-    let result = parse_tcp_frame_inner(input, limits);
-    trace_parse_result("tcp", &result);
+    limits: TcpLimits,
+) -> Result<Decoded<Frame>, DecodeError> {
+    let result = decode_tcp_frame_inner(input, limits);
+    trace_decode_result("tcp", &result);
     result
 }
 
-fn parse_tcp_frame_inner(input: &[u8], limits: Limits) -> Result<Parsed<Frame>, ParseError> {
+fn decode_tcp_frame_inner(input: &[u8], limits: TcpLimits) -> Result<Decoded<Frame>, DecodeError> {
     require(input.len(), 4)?;
     let (preamble, remaining) = input.split_at(4);
     if preamble != [0; 4] {
-        return Err(ParseError::Fatal {
+        return Err(DecodeError::Fatal {
             offset: 0,
             reason: FatalReason::InvalidPreamble,
         });
@@ -134,19 +116,19 @@ fn parse_tcp_frame_inner(input: &[u8], limits: Limits) -> Result<Parsed<Frame>, 
     require(remaining.len(), 4)?;
     let (data_length, remaining) = remaining.split_at(4);
     let data_length = u32::from_be_bytes(data_length.try_into().expect("four bytes")) as usize;
-    let total = data_length.checked_add(12).ok_or(ParseError::Fatal {
+    let total = data_length.checked_add(12).ok_or(DecodeError::Fatal {
         offset: 4,
         reason: FatalReason::LengthOverflow,
     })?;
     require(remaining.len(), 1)?;
     let codec_id = remaining[0];
     let limit = if codec_id == 0x0c {
-        limits.max_codec12_wire_bytes
+        limits.max_codec12_frame_bytes()
     } else {
-        limits.max_avl_wire_bytes
+        limits.max_avl_frame_bytes()
     };
     if total > limit {
-        return Err(ParseError::Fatal {
+        return Err(DecodeError::Fatal {
             offset: 4,
             reason: FatalReason::FrameTooLarge {
                 declared: total,
@@ -175,30 +157,30 @@ fn parse_tcp_frame_inner(input: &[u8], limits: Limits) -> Result<Parsed<Frame>, 
     }
 
     let value = match codec_id {
-        0x08 | 0x8e | 0x10 => Frame::Avl(parse_avl_packet(data, total, 8)?),
-        0x0c => Frame::Codec12(parse_codec12_packet(data, total, 8)?),
+        0x08 | 0x8e | 0x10 => Frame::Avl(decode_avl_packet(data, total, 8)?),
+        0x0c => Frame::Codec12(decode_codec12_packet(data, total, 8)?),
         codec_id => return reject(total, 8, RejectionReason::UnsupportedCodec { codec_id }),
     };
-    Ok(Parsed {
+    Ok(Decoded {
         value,
         consumed: total,
     })
 }
 
-/// Parses one UDP AVL datagram using [`Limits::default`].
+/// Decodes exactly one UDP AVL datagram using [`UdpLimits::default`].
 ///
-/// This slice parser is useful with custom socket code. Unlike
+/// This slice decoder is useful with custom socket code. Unlike
 /// [`crate::udp::TeltonikaUdpSocket`], it deliberately permits bytes after the
 /// first declared datagram and reports where they begin through
-/// [`Parsed::consumed`].
+/// [`Decoded::consumed`].
 ///
 /// # Errors
 ///
-/// Returns [`ParseError::Incomplete`] for a truncated declared datagram,
-/// [`ParseError::Rejected`] for a safely delimited invalid payload, and
-/// [`ParseError::Fatal`] when framing cannot be trusted.
-pub fn parse_udp_datagram(input: &[u8]) -> Result<Parsed<UdpDatagram>, ParseError> {
-    parse_udp_datagram_with_limits(input, Limits::default())
+/// Returns [`DecodeError::Incomplete`] for a truncated declared datagram,
+/// [`DecodeError::Rejected`] for a safely delimited invalid payload, and
+/// [`DecodeError::Fatal`] when framing cannot be trusted.
+pub fn decode_udp_datagram(input: &[u8]) -> Result<UdpDatagram, UdpDecodeError> {
+    decode_udp_datagram_with_limits(input, UdpLimits::default())
 }
 
 /// Parses one UDP AVL datagram with caller-provided wire-size limits.
@@ -209,71 +191,84 @@ pub fn parse_udp_datagram(input: &[u8]) -> Result<Parsed<UdpDatagram>, ParseErro
 ///
 /// # Errors
 ///
-/// Returns the same [`ParseError`] variants as [`parse_udp_datagram`], including
-/// a fatal [`crate::parser::FatalReason::DatagramTooLarge`] when the declared
+/// Returns the same [`DecodeError`] variants as [`decode_udp_datagram`], including
+/// a fatal [`crate::decoder::FatalReason::DatagramTooLarge`] when the declared
 /// complete wire size exceeds `limits`.
-pub fn parse_udp_datagram_with_limits(
+pub fn decode_udp_datagram_with_limits(
     input: &[u8],
-    limits: Limits,
-) -> Result<Parsed<UdpDatagram>, ParseError> {
-    let result = parse_udp_datagram_inner(input, limits);
+    limits: UdpLimits,
+) -> Result<UdpDatagram, UdpDecodeError> {
+    let result = decode_udp_datagram_inner(input, limits);
     trace_udp_result(&result);
     result
 }
 
-fn parse_udp_datagram_inner(
+fn decode_udp_datagram_inner(
     input: &[u8],
-    limits: Limits,
-) -> Result<Parsed<UdpDatagram>, ParseError> {
-    require(input.len(), 2)?;
+    limits: UdpLimits,
+) -> Result<UdpDatagram, UdpDecodeError> {
+    if input.len() < 2 {
+        return Err(UdpDecodeError::TruncatedHeader {
+            actual: input.len(),
+        });
+    }
     let (payload_length, remaining) = input.split_at(2);
     let payload_length = usize::from(u16::from_be_bytes(
         payload_length.try_into().expect("two bytes"),
     ));
-    let total = payload_length.checked_add(2).ok_or(ParseError::Fatal {
-        offset: 0,
-        reason: FatalReason::LengthOverflow,
-    })?;
-    if total > limits.max_udp_wire_bytes {
-        return Err(ParseError::Fatal {
-            offset: 0,
-            reason: FatalReason::DatagramTooLarge {
-                declared: total,
-                limit: limits.max_udp_wire_bytes,
-            },
+    let total = payload_length + 2;
+    if total > limits.max_datagram_bytes() {
+        return Err(UdpDecodeError::DatagramTooLarge {
+            declared: total,
+            limit: limits.max_datagram_bytes(),
         });
     }
-    require(remaining.len(), payload_length)?;
-    let (payload, _) = remaining.split_at(payload_length);
+    if input.len() != total {
+        return Err(UdpDecodeError::LengthMismatch {
+            declared: total,
+            actual: input.len(),
+        });
+    }
+    let payload = remaining;
     if total < 23 {
-        return reject(total, 2, RejectionReason::InvalidPayloadLength);
+        return udp_invalid(2, RejectionReason::InvalidPayloadLength);
     }
     let channel_packet_id = u16::from_be_bytes(payload[..2].try_into().expect("two bytes"));
     if payload[2] != 1 {
-        return reject(
-            total,
-            4,
-            RejectionReason::InvalidChannel { value: payload[2] },
-        );
+        return udp_invalid(4, RejectionReason::InvalidChannel { value: payload[2] });
     }
     let avl_packet_id = payload[3];
     let imei_length = usize::from(u16::from_be_bytes(
         payload[4..6].try_into().expect("two bytes"),
     ));
     if imei_length != 15 {
-        return reject(total, 6, RejectionReason::InvalidImei);
+        return udp_invalid(6, RejectionReason::InvalidImei);
     }
     let imei_digits: [u8; 15] = payload[6..21].try_into().expect("fifteen bytes");
-    let imei =
-        Imei::new(imei_digits).map_err(|_| rejected(total, 8, RejectionReason::InvalidImei))?;
-    let packet = parse_avl_packet(&payload[21..], total, 23)?;
-    Ok(Parsed {
-        value: UdpDatagram::from_parts(channel_packet_id, avl_packet_id, imei, packet),
-        consumed: total,
-    })
+    let imei = Imei::new(imei_digits).map_err(|_| UdpDecodeError::Invalid {
+        offset: 8,
+        reason: RejectionReason::InvalidImei,
+    })?;
+    let packet = decode_avl_packet(&payload[21..], total, 23).map_err(|error| match error {
+        DecodeError::Rejected { offset, reason, .. } => UdpDecodeError::Invalid { offset, reason },
+        DecodeError::Incomplete { .. } | DecodeError::Fatal { .. } => UdpDecodeError::Invalid {
+            offset: 23,
+            reason: RejectionReason::InvalidPayloadLength,
+        },
+    })?;
+    Ok(UdpDatagram::from_parts(
+        channel_packet_id,
+        avl_packet_id,
+        imei,
+        packet,
+    ))
 }
 
-fn parse_avl_packet(data: &[u8], consumed: usize, base: usize) -> Result<AvlPacket, ParseError> {
+fn udp_invalid<T>(offset: usize, reason: RejectionReason) -> Result<T, UdpDecodeError> {
+    Err(UdpDecodeError::Invalid { offset, reason })
+}
+
+fn decode_avl_packet(data: &[u8], consumed: usize, base: usize) -> Result<AvlPacket, DecodeError> {
     let codec = match data.first().copied() {
         Some(0x08) => AvlCodec::Codec8,
         Some(0x8e) => AvlCodec::Codec8Extended,
@@ -294,10 +289,13 @@ fn parse_avl_packet(data: &[u8], consumed: usize, base: usize) -> Result<AvlPack
     let record_count = cursor
         .u8()
         .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+    if record_count == 0 {
+        return reject(consumed, base + 1, RejectionReason::EmptyAvlPacket);
+    }
     let mut records = Vec::with_capacity(usize::from(record_count));
     for _ in 0..record_count {
         records.push(
-            parse_record(&mut cursor, codec)
+            decode_record(&mut cursor, codec)
                 .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?,
         );
     }
@@ -324,11 +322,11 @@ fn parse_avl_packet(data: &[u8], consumed: usize, base: usize) -> Result<AvlPack
     Ok(AvlPacket::from_parts(codec, records))
 }
 
-fn parse_codec12_packet(
+fn decode_codec12_packet(
     data: &[u8],
     consumed: usize,
     base: usize,
-) -> Result<Codec12Packet, ParseError> {
+) -> Result<Codec12Packet, DecodeError> {
     let mut cursor = ByteCursor::new(data);
     cursor
         .skip(1)
@@ -337,21 +335,32 @@ fn parse_codec12_packet(
         .u8()
         .map_err(|reason| rejected(consumed, base + 1, reason))?;
     let mut type_id = None;
-    let mut payloads = Vec::with_capacity(usize::from(first_count));
-    for _ in 0..first_count {
+    let mut payloads = Vec::new();
+    while cursor.remaining() > 1 {
+        if payloads.len() == usize::from(u8::MAX) {
+            return reject(
+                consumed,
+                base + cursor.position(),
+                RejectionReason::TooManyCodec12Messages {
+                    actual: payloads.len() + 1,
+                    maximum: usize::from(u8::MAX),
+                },
+            );
+        }
         let current_type = cursor
             .u8()
             .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
-        if type_id
-            .replace(current_type)
-            .is_some_and(|expected| expected != current_type)
-        {
+        if let Some(expected) = type_id.filter(|expected| *expected != current_type) {
             return reject(
                 consumed,
                 base + cursor.position() - 1,
-                RejectionReason::InvalidPayloadLength,
+                RejectionReason::Codec12TypeMismatch {
+                    expected,
+                    actual: current_type,
+                },
             );
         }
+        type_id.get_or_insert(current_type);
         let length = cursor
             .u32()
             .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?
@@ -360,6 +369,9 @@ fn parse_codec12_packet(
             .take(length)
             .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
         payloads.push(payload.to_vec());
+    }
+    if payloads.is_empty() {
+        return reject(consumed, base + 1, RejectionReason::EmptyCodec12Batch);
     }
     let second_count = cursor
         .u8()
@@ -379,16 +391,23 @@ fn parse_codec12_packet(
             second: second_count,
         }
     };
-    let type_id = type_id.unwrap_or(0);
+    let decoded_count = payloads.len();
+    let counts_match =
+        usize::from(first_count) == decoded_count && usize::from(second_count) == decoded_count;
+    let type_id = type_id.expect("non-empty Codec 12 batch establishes a type");
     let message = match type_id {
         0x05 => Codec12Message::Command(payloads),
         0x06 => Codec12Message::Response(payloads),
         type_id => Codec12Message::Other { type_id, payloads },
     };
-    Ok(Codec12Packet::from_parts(message, count_status))
+    Ok(Codec12Packet::from_parts(
+        message,
+        count_status,
+        counts_match,
+    ))
 }
 
-fn parse_record(
+fn decode_record(
     cursor: &mut ByteCursor<'_>,
     codec: AvlCodec,
 ) -> Result<AvlRecord, RejectionReason> {
@@ -552,22 +571,22 @@ impl<'a> ByteCursor<'a> {
     }
 }
 
-fn require(actual: usize, needed: usize) -> Result<(), ParseError> {
+fn require(actual: usize, needed: usize) -> Result<(), DecodeError> {
     if actual >= needed {
         Ok(())
     } else {
-        Err(ParseError::Incomplete {
+        Err(DecodeError::Incomplete {
             needed: NonZeroUsize::new(needed - actual).expect("positive difference"),
         })
     }
 }
 
-fn reject<T>(consumed: usize, offset: usize, reason: RejectionReason) -> Result<T, ParseError> {
+fn reject<T>(consumed: usize, offset: usize, reason: RejectionReason) -> Result<T, DecodeError> {
     Err(rejected(consumed, offset, reason))
 }
 
-const fn rejected(consumed: usize, offset: usize, reason: RejectionReason) -> ParseError {
-    ParseError::Rejected {
+const fn rejected(consumed: usize, offset: usize, reason: RejectionReason) -> DecodeError {
+    DecodeError::Rejected {
         consumed,
         offset,
         reason,
@@ -575,22 +594,22 @@ const fn rejected(consumed: usize, offset: usize, reason: RejectionReason) -> Pa
 }
 
 #[cfg(feature = "tracing")]
-fn trace_parse_result(transport: &'static str, result: &Result<Parsed<Frame>, ParseError>) {
+fn trace_decode_result(transport: &'static str, result: &Result<Decoded<Frame>, DecodeError>) {
     match result {
-        Ok(parsed) => tracing::trace!(
+        Ok(decoded) => tracing::trace!(
             transport,
             outcome = "accepted",
-            consumed = parsed.consumed,
-            codec_id = parsed.value.codec_id(),
-            "parsed protocol frame"
+            consumed = decoded.consumed,
+            codec_id = decoded.value.codec_id(),
+            "decoded protocol frame"
         ),
-        Err(ParseError::Incomplete { needed }) => tracing::trace!(
+        Err(DecodeError::Incomplete { needed }) => tracing::trace!(
             transport,
             outcome = "incomplete",
             needed = needed.get(),
             "protocol frame incomplete"
         ),
-        Err(ParseError::Rejected {
+        Err(DecodeError::Rejected {
             consumed, offset, ..
         }) => tracing::debug!(
             transport,
@@ -599,7 +618,7 @@ fn trace_parse_result(transport: &'static str, result: &Result<Parsed<Frame>, Pa
             offset,
             "protocol frame rejected"
         ),
-        Err(ParseError::Fatal { offset, .. }) => tracing::debug!(
+        Err(DecodeError::Fatal { offset, .. }) => tracing::debug!(
             transport,
             outcome = "fatal",
             offset,
@@ -609,41 +628,45 @@ fn trace_parse_result(transport: &'static str, result: &Result<Parsed<Frame>, Pa
 }
 
 #[cfg(not(feature = "tracing"))]
-fn trace_parse_result(_: &'static str, _: &Result<Parsed<Frame>, ParseError>) {}
+fn trace_decode_result(_: &'static str, _: &Result<Decoded<Frame>, DecodeError>) {}
 
 #[cfg(feature = "tracing")]
-fn trace_udp_result(result: &Result<Parsed<UdpDatagram>, ParseError>) {
+fn trace_udp_result(result: &Result<UdpDatagram, UdpDecodeError>) {
     match result {
-        Ok(parsed) => tracing::trace!(
+        Ok(datagram) => tracing::trace!(
             transport = "udp",
             outcome = "accepted",
-            consumed = parsed.consumed,
-            codec_id = parsed.value.packet().codec().id(),
-            "parsed protocol datagram"
+            codec_id = datagram.packet().codec().id(),
+            "decoded protocol datagram"
         ),
-        Err(ParseError::Incomplete { needed }) => tracing::trace!(
+        Err(UdpDecodeError::TruncatedHeader { actual }) => tracing::debug!(
             transport = "udp",
-            outcome = "incomplete",
-            needed = needed.get(),
-            "protocol datagram incomplete"
+            outcome = "truncated_header",
+            actual,
+            "protocol datagram rejected"
         ),
-        Err(ParseError::Rejected {
-            consumed, offset, ..
-        }) => tracing::debug!(
+        Err(UdpDecodeError::Invalid { offset, .. }) => tracing::debug!(
             transport = "udp",
-            outcome = "rejected",
-            consumed,
+            outcome = "invalid",
             offset,
             "protocol datagram rejected"
         ),
-        Err(ParseError::Fatal { offset, .. }) => tracing::debug!(
+        Err(UdpDecodeError::LengthMismatch { declared, actual }) => tracing::debug!(
             transport = "udp",
-            outcome = "fatal",
-            offset,
-            "protocol datagram framing failed"
+            outcome = "length_mismatch",
+            declared,
+            actual,
+            "protocol datagram rejected"
+        ),
+        Err(UdpDecodeError::DatagramTooLarge { declared, limit }) => tracing::debug!(
+            transport = "udp",
+            outcome = "too_large",
+            declared,
+            limit,
+            "protocol datagram rejected"
         ),
     }
 }
 
 #[cfg(not(feature = "tracing"))]
-fn trace_udp_result(_: &Result<Parsed<UdpDatagram>, ParseError>) {}
+fn trace_udp_result(_: &Result<UdpDatagram, UdpDecodeError>) {}

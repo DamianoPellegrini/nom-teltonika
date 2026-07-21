@@ -4,9 +4,9 @@ use std::{net::UdpSocket, time::Duration};
 
 use common::*;
 use nom_teltonika::{
-    encode::encode_udp_ack,
-    parser::Limits,
-    udp::{TeltonikaUdpSocket, UdpSocketError},
+    decoder::UdpLimits,
+    encoder::encode_udp_ack,
+    udp::{TeltonikaUdpSocket, UdpReceiveError},
 };
 
 #[test]
@@ -55,15 +55,15 @@ fn should_detect_udp_socket_truncation_without_parsing_prefix() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let server_address = server_socket.local_addr().unwrap();
-    let limits = Limits::new(1280, 65_536, 23).unwrap();
+    let limits = UdpLimits::new(56).unwrap();
     let mut server = TeltonikaUdpSocket::with_limits(server_socket, limits);
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
-    client.send_to(&[0; 24], server_address).unwrap();
+    client.send_to(&[0; 57], server_address).unwrap();
     assert!(matches!(
         server.recv_datagram(),
-        Err(UdpSocketError::Truncated {
-            received_at_least: 24,
-            limit: 23
+        Err(UdpReceiveError::Truncated {
+            received_at_least: 57,
+            limit: 56
         })
     ));
 }

@@ -11,7 +11,7 @@ fn should_round_trip_system_time_at_millisecond_precision() {
     assert_eq!(timestamp.unix_millis(), 1_234);
     assert_eq!(
         timestamp.to_system_time(),
-        Some(UNIX_EPOCH + Duration::from_millis(1_234))
+        Ok(UNIX_EPOCH + Duration::from_millis(1_234))
     );
 }
 
@@ -21,7 +21,7 @@ fn should_reject_system_time_before_unix_epoch() {
 
     assert!(matches!(
         AvlTimestamp::from_system_time(system_time),
-        Err(TimestampError::BeforeUnixEpoch(_))
+        Err(TimestampError::BeforeUnixEpoch)
     ));
 }
 

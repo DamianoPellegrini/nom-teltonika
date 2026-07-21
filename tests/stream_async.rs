@@ -20,7 +20,7 @@ async fn should_match_sync_behavior_for_async_stream() {
     ));
     assert!(matches!(
         stream.read_frame_async().await,
-        Err(StreamError::Closed)
+        Err(StreamReadError::Closed)
     ));
 }
 
