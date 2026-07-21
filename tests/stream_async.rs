@@ -13,7 +13,7 @@ async fn should_match_sync_behavior_for_async_stream() {
     let (mut sender, receiver) = tokio::io::duplex(frame.len() * 2);
     sender.write_all(&frame).await.unwrap();
     sender.shutdown().await.unwrap();
-    let mut stream = TeltonikaStream::new(receiver);
+    let mut stream = TeltonikaTcpStream::new(receiver);
     assert!(matches!(
         stream.read_frame_async().await.unwrap(),
         Frame::Avl(_)
@@ -32,7 +32,7 @@ async fn should_resume_async_read_after_cancellation() {
     let split = 12;
     let (mut sender, receiver) = tokio::io::duplex(frame.len() * 2);
     sender.write_all(&frame[..split]).await.unwrap();
-    let mut stream = TeltonikaStream::new(receiver);
+    let mut stream = TeltonikaTcpStream::new(receiver);
 
     tokio::select! {
         biased;

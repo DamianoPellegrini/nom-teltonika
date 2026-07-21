@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, io};
+use std::{error::Error, fmt, io, num::NonZeroUsize};
 
 use crate::{
     decoder_impl::decode_tcp_frame_with_limits,
@@ -9,10 +9,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Buffering and protocol limits for [`TeltonikaStream`].
+/// Buffering and protocol limits for [`TeltonikaTcpStream`].
 ///
-/// `read_size` controls each read from the underlying transport; protocol
-/// limits, not this chunk size, bound retained frame storage.
+/// `read_size` controls each read from the underlying transport. Protocol
+/// limits bound individual frames, while read-ahead may additionally retain
+/// bytes from following frames.
 pub struct StreamConfig {
     /// Bytes requested from the underlying stream per read; defaults to 4 KiB.
     read_size: usize,
@@ -78,7 +79,7 @@ impl Error for StreamConfigError {}
 
 #[derive(Debug)]
 #[non_exhaustive]
-/// Failure reading and decoding through [`TeltonikaStream`].
+/// Failure reading and decoding through [`TeltonikaTcpStream`].
 pub enum StreamReadError {
     /// The underlying stream reached EOF at a frame boundary.
     Closed,
@@ -87,7 +88,7 @@ pub enum StreamReadError {
         /// Unconsumed bytes retained when EOF was observed.
         buffered: usize,
         /// Last exact additional-byte requirement reported by the decoder.
-        needed: std::num::NonZeroUsize,
+        needed: NonZeroUsize,
     },
     /// The decoder rejected a complete frame or encountered fatal framing.
     Decode(DecodeError),
@@ -168,7 +169,7 @@ impl From<io::Error> for CommandWriteError {
 
 /// Pull-based framing over a synchronous or Tokio byte stream.
 ///
-/// The wrapper owns its receive buffer and returns owned [`Frame`] values. It
+/// The wrapper owns its stream buffer and returns owned [`Frame`] values. It
 /// reads only when you call a read method, never runs a background task, and
 /// never acknowledges a frame automatically. One instance should exclusively
 /// own the read side: bypassing it may skip bytes already buffered here.
@@ -187,23 +188,23 @@ impl From<io::Error> for CommandWriteError {
 /// use nom_teltonika::{
 ///     encoder::encode_codec12_command,
 ///     protocol::Frame,
-///     stream::TeltonikaStream,
+///     stream::TeltonikaTcpStream,
 /// };
 ///
 /// let bytes = encode_codec12_command(b"getinfo").unwrap();
-/// let mut stream = TeltonikaStream::new(Cursor::new(bytes));
+/// let mut stream = TeltonikaTcpStream::new(Cursor::new(bytes));
 /// let Frame::Codec12(packet) = stream.read_frame().unwrap() else {
 ///     panic!("expected Codec 12");
 /// };
 /// assert_eq!(packet.message().payload_as_str(0).unwrap().unwrap(), "getinfo");
 /// ```
-pub struct TeltonikaStream<S> {
+pub struct TeltonikaTcpStream<S> {
     inner: S,
     config: StreamConfig,
-    receive: ReceiveBuffer,
+    buffer: StreamBuffer,
 }
 
-impl<S> TeltonikaStream<S> {
+impl<S> TeltonikaTcpStream<S> {
     /// Wraps a transport using [`StreamConfig::default`].
     pub fn new(inner: S) -> Self {
         Self::with_config(inner, StreamConfig::default()).expect("default stream config is valid")
@@ -219,7 +220,7 @@ impl<S> TeltonikaStream<S> {
         Ok(Self {
             inner,
             config,
-            receive: ReceiveBuffer::new(config.read_size),
+            buffer: StreamBuffer::new(config.read_size),
         })
     }
 
@@ -243,26 +244,26 @@ impl<S> TeltonikaStream<S> {
         self.config
     }
 
-    fn decode_buffered(&mut self) -> Result<BufferedFrame, StreamReadError> {
-        match decode_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
+    fn decode_buffered(&mut self) -> Result<DecodeProgress, StreamReadError> {
+        match decode_tcp_frame_with_limits(self.buffer.as_slice(), self.config.limits) {
             Ok(decoded) => {
-                self.receive.consume(decoded.consumed);
+                self.buffer.consume(decoded.consumed);
                 #[cfg(feature = "tracing")]
                 tracing::trace!(
                     consumed = decoded.consumed,
-                    buffered = self.receive.len(),
+                    buffered = self.buffer.len(),
                     codec_id = decoded.value.codec_id(),
                     "decoded TCP frame"
                 );
-                Ok(BufferedFrame::Decoded(decoded.value))
+                Ok(DecodeProgress::Complete(decoded.value))
             }
-            Err(DecodeError::Incomplete { needed }) => Ok(BufferedFrame::Need(needed)),
+            Err(DecodeError::Incomplete { needed }) => Ok(DecodeProgress::Incomplete(needed)),
             Err(error @ DecodeError::Rejected { consumed, .. }) => {
-                self.receive.consume(consumed);
+                self.buffer.consume(consumed);
                 #[cfg(feature = "tracing")]
                 tracing::debug!(
                     consumed,
-                    buffered = self.receive.len(),
+                    buffered = self.buffer.len(),
                     "rejected delimited TCP frame"
                 );
                 Err(StreamReadError::Decode(error))
@@ -270,14 +271,25 @@ impl<S> TeltonikaStream<S> {
             Err(error) => Err(StreamReadError::Decode(error)),
         }
     }
+
+    fn eof_error(&self, needed: NonZeroUsize) -> StreamReadError {
+        if self.buffer.is_empty() {
+            StreamReadError::Closed
+        } else {
+            StreamReadError::Truncated {
+                buffered: self.buffer.len(),
+                needed,
+            }
+        }
+    }
 }
 
-enum BufferedFrame {
-    Decoded(Frame),
-    Need(std::num::NonZeroUsize),
+enum DecodeProgress {
+    Complete(Frame),
+    Incomplete(NonZeroUsize),
 }
 
-impl<S: io::Read> TeltonikaStream<S> {
+impl<S: io::Read> TeltonikaTcpStream<S> {
     /// Reads and validates the next owned TCP frame.
     ///
     /// Reads are greedy: one call may buffer bytes from following frames, which
@@ -294,29 +306,21 @@ impl<S: io::Read> TeltonikaStream<S> {
     pub fn read_frame(&mut self) -> Result<Frame, StreamReadError> {
         loop {
             let needed = match self.decode_buffered()? {
-                BufferedFrame::Decoded(frame) => return Ok(frame),
-                BufferedFrame::Need(needed) => needed,
+                DecodeProgress::Complete(frame) => return Ok(frame),
+                DecodeProgress::Incomplete(needed) => needed,
             };
 
-            let read = self.inner.read(self.receive.writable(needed.get()))?;
+            let read = self.buffer.fill_from(&mut self.inner)?;
             if read == 0 {
-                return if self.receive.is_empty() {
-                    Err(StreamReadError::Closed)
-                } else {
-                    Err(StreamReadError::Truncated {
-                        buffered: self.receive.len(),
-                        needed,
-                    })
-                };
+                return Err(self.eof_error(needed));
             }
-            self.receive.commit_read(read);
             #[cfg(feature = "tracing")]
-            tracing::trace!(read, buffered = self.receive.len(), "read TCP bytes");
+            tracing::trace!(read, buffered = self.buffer.len(), "read TCP bytes");
         }
     }
 }
 
-impl<S: io::Write> TeltonikaStream<S> {
+impl<S: io::Write> TeltonikaTcpStream<S> {
     /// Writes and flushes the one-byte IMEI acceptance decision.
     ///
     /// Send `true` before expecting AVL data from an accepted TCP device.
@@ -369,37 +373,27 @@ impl<S: io::Write> TeltonikaStream<S> {
 }
 
 #[cfg(feature = "tokio")]
-impl<S: tokio::io::AsyncRead + Unpin> TeltonikaStream<S> {
+impl<S: tokio::io::AsyncRead + Unpin> TeltonikaTcpStream<S> {
     /// Asynchronously reads and validates the next owned TCP frame.
     ///
     /// This method is cancellation-safe with respect to protocol progress:
-    /// bytes already read remain in the wrapper's receive buffer for the next
+    /// bytes already read remain in the wrapper's stream buffer for the next
     /// call. It otherwise follows [`Self::read_frame`]'s error and consumption
     /// contract.
     pub async fn read_frame_async(&mut self) -> Result<Frame, StreamReadError> {
-        use tokio::io::AsyncReadExt;
-
         loop {
             let needed = match self.decode_buffered()? {
-                BufferedFrame::Decoded(frame) => return Ok(frame),
-                BufferedFrame::Need(needed) => needed,
+                DecodeProgress::Complete(frame) => return Ok(frame),
+                DecodeProgress::Incomplete(needed) => needed,
             };
-            let read = self.inner.read(self.receive.writable(needed.get())).await?;
+            let read = self.buffer.fill_from_async(&mut self.inner).await?;
             if read == 0 {
-                return if self.receive.is_empty() {
-                    Err(StreamReadError::Closed)
-                } else {
-                    Err(StreamReadError::Truncated {
-                        buffered: self.receive.len(),
-                        needed,
-                    })
-                };
+                return Err(self.eof_error(needed));
             }
-            self.receive.commit_read(read);
             #[cfg(feature = "tracing")]
             tracing::trace!(
                 read,
-                buffered = self.receive.len(),
+                buffered = self.buffer.len(),
                 "read TCP bytes asynchronously"
             );
         }
@@ -407,7 +401,7 @@ impl<S: tokio::io::AsyncRead + Unpin> TeltonikaStream<S> {
 }
 
 #[cfg(feature = "tokio")]
-impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
+impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaTcpStream<S> {
     /// Writes and flushes an IMEI decision.
     ///
     /// This operation is not cancellation-safe. Close the connection after a
@@ -471,14 +465,14 @@ impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
     }
 }
 
-struct ReceiveBuffer {
+struct StreamBuffer {
     storage: Vec<u8>,
     head: usize,
     tail: usize,
     read_size: usize,
 }
 
-impl ReceiveBuffer {
+impl StreamBuffer {
     fn new(read_size: usize) -> Self {
         Self {
             storage: vec![0; read_size],
@@ -488,7 +482,7 @@ impl ReceiveBuffer {
         }
     }
 
-    fn readable(&self) -> &[u8] {
+    fn as_slice(&self) -> &[u8] {
         &self.storage[self.head..self.tail]
     }
     fn len(&self) -> usize {
@@ -498,7 +492,25 @@ impl ReceiveBuffer {
         self.len() == 0
     }
 
-    fn writable(&mut self, needed: usize) -> &mut [u8] {
+    fn fill_from<R: io::Read>(&mut self, reader: &mut R) -> io::Result<usize> {
+        let read = reader.read(self.writable())?;
+        self.commit(read);
+        Ok(read)
+    }
+
+    #[cfg(feature = "tokio")]
+    async fn fill_from_async<R: tokio::io::AsyncRead + Unpin>(
+        &mut self,
+        reader: &mut R,
+    ) -> io::Result<usize> {
+        use tokio::io::AsyncReadExt;
+
+        let read = reader.read(self.writable()).await?;
+        self.commit(read);
+        Ok(read)
+    }
+
+    fn writable(&mut self) -> &mut [u8] {
         if self.head == self.tail {
             self.head = 0;
             self.tail = 0;
@@ -514,23 +526,23 @@ impl ReceiveBuffer {
             self.head = 0;
         }
 
-        let read_length = needed.min(self.read_size);
         let required = self
             .tail
-            .checked_add(read_length)
-            .expect("receive buffer size overflow");
+            .checked_add(self.read_size)
+            .expect("stream buffer size overflow");
         if self.storage.len() < required {
             self.storage.resize(required, 0);
         }
         &mut self.storage[self.tail..required]
     }
 
-    fn commit_read(&mut self, length: usize) {
+    fn commit(&mut self, length: usize) {
         assert!(length <= self.read_size, "reader exceeded provided buffer");
         self.tail += length;
     }
 
     fn consume(&mut self, length: usize) {
+        assert!(length <= self.len(), "decoder exceeded buffered input");
         self.head += length;
         if self.head == self.tail {
             self.head = 0;

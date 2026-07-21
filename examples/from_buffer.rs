@@ -1,10 +1,10 @@
 use std::io::Cursor;
 
-use nom_teltonika::{protocol::Frame, stream::TeltonikaStream};
+use nom_teltonika::{protocol::Frame, stream::TeltonikaTcpStream};
 
 fn main() {
     // Write getinfo command to the device
-    let mut stream = TeltonikaStream::new(Cursor::new(Vec::new()));
+    let mut stream = TeltonikaTcpStream::new(Cursor::new(Vec::new()));
     stream.write_command("getinfo").expect("Write failed");
     let mut buffer = stream.into_inner().into_inner();
 
@@ -14,7 +14,7 @@ fn main() {
 
     // Read back as if it was a response
     buffer = hex::decode("000000000000000F0C010600000007676574696E666F0100008017").unwrap();
-    stream = TeltonikaStream::new(Cursor::new(buffer));
+    stream = TeltonikaTcpStream::new(Cursor::new(buffer));
     let Frame::Codec12(packet) = stream.read_frame().unwrap() else {
         panic!("expected a Codec 12 response");
     };

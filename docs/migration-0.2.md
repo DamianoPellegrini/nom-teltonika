@@ -44,7 +44,7 @@ For incremental TCP input, retain the full buffer on
 and close or reset the connection after `Fatal` unless you have an external
 resynchronization rule.
 
-`TeltonikaStream::read_frame` returns `StreamReadError`. EOF during a frame
+`TeltonikaTcpStream::read_frame` returns `StreamReadError`. EOF during a frame
 reports both `buffered` and the last exact `needed` value. IMEI decisions and
 AVL ACK/NACK methods return `io::Result<()>`; Codec 12 command methods return
 `CommandWriteError` because encoding can also fail.
@@ -74,7 +74,7 @@ policies. The maximum representable complete UDP datagram is 65,537 bytes.
 Codec 12 encoders now return `Result<Vec<u8>, EncodeError>` and reject empty
 batches, more than 255 commands, oversized commands, and oversized frames
 without panicking. The free I/O helper was removed; use the pure encoder or
-`TeltonikaStream::write_commands`.
+`TeltonikaTcpStream::write_commands`.
 
 ## Update protocol values
 

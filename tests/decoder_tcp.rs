@@ -213,7 +213,7 @@ fn should_reject_invalid_priority_generation_and_io_count() {
 }
 
 #[test]
-fn should_copy_variable_codec8_extended_io_bytes_once_into_owned_value() {
+fn should_preserve_variable_codec8_extended_io_bytes_in_owned_value() {
     let mut data = vec![0x8e, 1];
     data.extend_from_slice(&[0; 8]);
     data.push(0);

@@ -1,4 +1,4 @@
-# nom-teltonika
+# nom-teltonika, easily parse the teltonika protocol
 
 [![crates.io version](https://img.shields.io/crates/v/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
 [![crates.io downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
@@ -54,7 +54,7 @@ exactly one complete datagram and returns `UdpDatagram` directly.
 
 ## Handle a TCP connection
 
-Read the IMEI handshake before passing the connection to `TeltonikaStream`.
+Read the IMEI handshake before passing the connection to `TeltonikaTcpStream`.
 The stream never acknowledges packets automatically.
 
 ```no_run
@@ -62,7 +62,7 @@ use std::{io::Read, net::TcpListener};
 use nom_teltonika::{
     decoder::decode_imei,
     protocol::Frame,
-    stream::TeltonikaStream,
+    stream::TeltonikaTcpStream,
 };
 
 let listener = TcpListener::bind("0.0.0.0:5000")?;
@@ -73,7 +73,7 @@ socket.read_exact(&mut handshake)?;
 let imei = decode_imei(&handshake)?.value;
 
 let accepted = imei.as_str() == "356307042441013";
-let mut stream = TeltonikaStream::new(socket);
+let mut stream = TeltonikaTcpStream::new(socket);
 stream.write_imei_approval(accepted)?;
 
 if accepted {
@@ -125,7 +125,7 @@ socket.send_ack_to(
 | `DecodeError::Rejected` | Discard the reported `consumed` bytes. You may send a NACK. |
 | `DecodeError::Fatal` | Stop using the connection unless you have a resynchronization strategy. |
 
-`TeltonikaStream` returns `StreamReadError::Closed` at a frame boundary and
+`TeltonikaTcpStream` returns `StreamReadError::Closed` at a frame boundary and
 `StreamReadError::Truncated { buffered, needed }` when the connection closes
 during a frame. UDP decoding uses `UdpDecodeError`; a failure invalidates only
 the current datagram.

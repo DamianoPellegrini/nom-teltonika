@@ -4,7 +4,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use nom_teltonika::{
     decoder::{TcpLimits, decode_tcp_frame},
     encoder::encode_codec12_command,
-    stream::{StreamConfig, TeltonikaStream},
+    stream::{StreamConfig, TeltonikaTcpStream},
 };
 
 const CODEC8: &str = "000000000000003608010000016B40D8EA30010000000000000000000000000000000105021503010101425E0F01F10000601A014E0000000000000000010000C7CF";
@@ -29,7 +29,7 @@ fn decoder_benchmarks(criterion: &mut Criterion) {
                 bench.iter(|| {
                     let config = StreamConfig::new(*chunk_size, TcpLimits::default()).unwrap();
                     let mut stream =
-                        TeltonikaStream::with_config(Cursor::new(large_frame.clone()), config)
+                        TeltonikaTcpStream::with_config(Cursor::new(large_frame.clone()), config)
                             .unwrap();
                     black_box(stream.read_frame().unwrap())
                 });

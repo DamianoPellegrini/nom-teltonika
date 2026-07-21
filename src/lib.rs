@@ -10,8 +10,8 @@ mod decoder_impl;
 mod encoder_impl;
 #[path = "protocol.rs"]
 mod protocol_impl;
-#[path = "stream.rs"]
-mod stream_impl;
+#[path = "tcp.rs"]
+mod tcp;
 #[path = "udp.rs"]
 mod udp_impl;
 
@@ -60,20 +60,20 @@ pub mod protocol {
 
 /// Pull-based synchronous and asynchronous TCP stream handling.
 ///
-/// [`TeltonikaStream`] reads only when requested, returns owned frames, and
+/// [`TeltonikaTcpStream`] reads only when requested, returns owned frames, and
 /// never sends acknowledgments automatically. This lets the application place
 /// its own persistence or queue boundary before acknowledging device data.
 ///
-/// [`TeltonikaStream`]: stream::TeltonikaStream
+/// [`TeltonikaTcpStream`]: stream::TeltonikaTcpStream
 pub mod stream {
-    pub use crate::stream_impl::{
-        CommandWriteError, StreamConfig, StreamConfigError, StreamReadError, TeltonikaStream,
+    pub use crate::tcp::{
+        CommandWriteError, StreamConfig, StreamConfigError, StreamReadError, TeltonikaTcpStream,
     };
 }
 
 /// UDP socket handling with explicit peer addressing.
 ///
-/// UDP is kept separate from [`crate::stream::TeltonikaStream`] because a byte
+/// UDP is kept separate from [`crate::stream::TeltonikaTcpStream`] because a byte
 /// stream cannot preserve datagram boundaries, truncation, and source
 /// addresses. Acknowledgment methods require a destination to remain safe when
 /// one server socket handles multiple devices.

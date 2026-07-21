@@ -9,7 +9,7 @@ fn public_api_is_grouped_by_responsibility() {
     let _encode: fn(u32) -> [u8; 4] = encoder::encode_avl_ack;
 
     fn assert_public_types<S>(
-        _: Option<stream::TeltonikaStream<S>>,
+        _: Option<stream::TeltonikaTcpStream<S>>,
         _: Option<udp::TeltonikaUdpSocket<S>>,
     ) {
     }
