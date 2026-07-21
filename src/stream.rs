@@ -13,9 +13,9 @@ use crate::{
 /// limits, not this chunk size, bound retained frame storage.
 pub struct StreamConfig {
     /// Bytes requested from the underlying stream per read; defaults to 4 KiB.
-    pub read_size: usize,
+    read_size: usize,
     /// Maximum complete wire sizes accepted by the parser.
-    pub limits: Limits,
+    limits: Limits,
 }
 
 impl StreamConfig {
@@ -28,6 +28,16 @@ impl StreamConfig {
         let config = Self { read_size, limits };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Returns the number of bytes requested from the underlying stream per read.
+    pub const fn read_size(self) -> usize {
+        self.read_size
+    }
+
+    /// Returns the maximum complete wire sizes accepted by the parser.
+    pub const fn limits(self) -> Limits {
+        self.limits
     }
 
     fn validate(self) -> Result<(), StreamConfigError> {
@@ -163,8 +173,7 @@ impl<S> TeltonikaStream<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamConfigError`] if `config` was built with invalid public
-    /// field values rather than through [`StreamConfig::new`].
+    /// Returns [`StreamConfigError`] if `config` does not satisfy its invariants.
     pub fn with_config(inner: S, config: StreamConfig) -> Result<Self, StreamConfigError> {
         config.validate()?;
         Ok(Self {

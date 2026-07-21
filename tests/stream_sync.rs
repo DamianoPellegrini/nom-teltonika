@@ -65,3 +65,12 @@ fn should_reject_zero_or_incoherent_stream_configuration() {
     ));
     assert!(Limits::new(14, 16, 23).is_err());
 }
+
+#[test]
+fn should_expose_validated_stream_configuration() {
+    let limits = Limits::new(1280, 65_536, 2048).unwrap();
+    let config = StreamConfig::new(8192, limits).unwrap();
+
+    assert_eq!(config.read_size(), 8192);
+    assert_eq!(config.limits(), limits);
+}
