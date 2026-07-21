@@ -1,5 +1,13 @@
 # nom-teltonika
 
+[![crates.io version](https://img.shields.io/crates/v/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
+[![crates.io downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
+[![docs.rs](https://img.shields.io/docsrs/nom-teltonika?style=flat-square)](https://docs.rs/nom-teltonika)
+[![CI](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml)
+[![security audit](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/audit.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/audit.yml)
+[![license](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
+[![GitHub stars](https://img.shields.io/github/stars/DamianoPellegrini/nom-teltonika?style=social)](https://github.com/DamianoPellegrini/nom-teltonika)
+
 `nom-teltonika` parses and encodes Teltonika TCP and UDP wire protocols. The
 crate name is historical: version 0.2 uses a dependency-free, safe Rust core and
 does not depend on `nom`.
