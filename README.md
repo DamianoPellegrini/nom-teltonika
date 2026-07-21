@@ -8,14 +8,6 @@
 
 Decode and encode Teltonika TCP and UDP packets in Rust with a dependency-free core.
 
-Supported protocols:
-
-- AVL Codec 8, Codec 8 Extended, and Codec 16;
-- Codec 12 commands and responses;
-- TCP IMEI handshake and AVL acknowledgments;
-- UDP AVL packets and correlated acknowledgments;
-- synchronous and Tokio-based streams and sockets.
-
 ## Installation
 
 ```toml
@@ -23,12 +15,40 @@ Supported protocols:
 nom-teltonika = "0.2"
 ```
 
-No features are enabled by default.
+The crate requires Rust 1.85 or newer.
+The default build enables no Cargo features and uses no third-party runtime dependencies.
 
-## Decode a packet
+## Capabilities
 
-TCP decoders accept a byte slice and return an owned value with the number of bytes
-consumed.
+- Decode the length-prefixed TCP IMEI handshake.
+- Decode TCP AVL data using Codec 8, Codec 8 Extended, or Codec 16.
+- Decode Codec 12 commands, responses, and device-specific message types.
+- Decode UDP AVL packets while preserving their IMEI and packet identifiers.
+- Encode IMEI decisions, TCP AVL ACK/NACK responses, correlated UDP ACKs, and Codec 12 command batches.
+- Read and write synchronous TCP streams and UDP sockets.
+- Return owned protocol values with explicit framing, validation, and transport errors.
+
+## Cargo features
+
+| Feature | Adds |
+| --- | --- |
+| `tokio` | Async TCP stream and UDP socket methods. |
+| `serde` | Serialization of wire models and validated deserialization of `Imei`, `TcpLimits`, and `UdpLimits`. |
+| `chrono` | Conversion between `AvlTimestamp` and `DateTime<Utc>`. |
+| `tracing` | Framing events without IMEI, coordinates, commands, or payloads. |
+
+Enable only the integrations you need:
+
+```toml
+[dependencies]
+nom-teltonika = { version = "0.2", features = ["tokio", "serde"] }
+```
+
+## Examples
+
+### Decode a packet
+
+TCP decoders accept a byte slice and return an owned value with the number of consumed bytes.
 
 ```rust
 use nom_teltonika::{
@@ -52,7 +72,7 @@ assert_eq!(decoded.consumed, bytes.len());
 Use `decoder::decode_imei` for the TCP handshake. `decode_udp_datagram` requires
 exactly one complete datagram and returns `UdpDatagram` directly.
 
-## Handle a TCP connection
+### Handle a TCP connection
 
 Read the IMEI handshake before passing the connection to `TeltonikaTcpStream`.
 The stream never acknowledges packets automatically.
@@ -91,14 +111,12 @@ if accepted {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Keep the connection open to send Codec 12 commands. Do not read directly from
-the underlying transport after wrapping it because the stream may buffer bytes
-from the next frame.
+Keep the connection open to send Codec 12 commands.
+Do not read directly from the underlying transport after wrapping it because the stream may buffer bytes from the next frame.
 
-## Receive UDP packets
+### Receive UDP packets
 
-Send each acknowledgment to the source address and reuse the packet identifiers
-returned by the device.
+Send each acknowledgment to the source address and reuse the packet identifiers returned by the device.
 
 ```no_run
 use std::net::UdpSocket;
@@ -117,7 +135,33 @@ socket.send_ack_to(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Handle decoding errors
+More executable examples are available in [`examples/`](examples/).
+
+## Protocol notes
+
+### Library assumptions
+
+- Decoding validates wire structure; it does not imply that your application accepted or persisted the records.
+- Stream and socket wrappers never acknowledge packets automatically.
+- Codec 12 payloads are arbitrary bytes; call `payload_as_str` only when you expect UTF-8.
+- GPS coordinates retain their exact signed wire values, including anomalous values.
+- AVL IO identifiers, units, sizes, and multipliers depend on the device model and firmware; the crate does not embed one global mapping.
+- Codec 12 commands require an open GPRS session.
+
+### Framing and transport
+
+- Wire integers are big-endian.
+- CRC-16/IBM covers the codec ID through the second record or command count.
+- A TCP session starts with the length-prefixed IMEI handshake.
+- `TeltonikaTcpStream` may read ahead and retain bytes belonging to the next frame.
+- UDP acknowledgments must reuse both packet identifiers and be sent to the source peer.
+
+The `encoder` module produces IMEI decisions, TCP AVL ACK/NACK responses,
+correlated UDP ACKs, and complete Codec 12 command frames.
+Codec 12 encoders return `EncodeError` for empty, oversized, or unrepresentable batches.
+Stream ACK methods return `io::Result<()>`, while Codec 12 command methods return `CommandWriteError`.
+
+### Errors and limits
 
 | Error | Action |
 | --- | --- |
@@ -130,41 +174,12 @@ socket.send_ack_to(
 during a frame. UDP decoding uses `UdpDecodeError`; a failure invalidates only
 the current datagram.
 
-## Encode responses and commands
+The default maximum complete wire sizes are 1280 bytes for AVL TCP frames,
+64 KiB for Codec 12 frames, and 2048 bytes for UDP datagrams.
+The Codec 12 and UDP defaults are local safety policies rather than Teltonika wire limits.
+Configure lower model-specific limits when required.
 
-The `encoder` module provides pure functions for:
-
-- IMEI approval;
-- TCP AVL ACK and NACK;
-- correlated UDP ACK;
-- Codec 12 command frames and batches.
-
-Codec 12 payloads are bytes. Use `payload_as_str` only when you expect UTF-8.
-Codec 12 encoders return `EncodeError` for empty, oversized, or
-unrepresentable batches. Stream ACK methods return `io::Result<()>`, while
-Codec 12 command methods return `CommandWriteError`.
-
-## Features
-
-| Feature | Adds |
-| --- | --- |
-| `tokio` | Async TCP stream methods and UDP socket support. |
-| `serde` | Serialization of wire models and validated deserialization of `Imei`, `TcpLimits`, and `UdpLimits`. |
-| `chrono` | Conversion between `AvlTimestamp` and `DateTime<Utc>`. |
-| `tracing` | Framing events without IMEI, coordinates, commands, or payloads. |
-
-```toml
-[dependencies]
-nom-teltonika = { version = "0.2", features = ["tokio", "serde"] }
-```
-
-## Protocol notes
-
-- Wire integers are big-endian.
-- CRC-16/IBM covers the codec ID through the second record or command count.
-- GPS coordinates retain their exact signed wire values.
-- AVL IO identifiers depend on the device model and firmware.
-- Codec 12 commands require an open GPRS session.
+### References
 
 See the [0.2 migration guide](docs/migration-0.2.md) when upgrading from 0.1.
 Protocol details are available in Teltonika's official
@@ -173,6 +188,4 @@ documentation.
 
 Limit defaults and framing rules were checked against Teltonika's
 [Data Sending Protocols](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols)
-and [Codec](https://wiki.teltonika-gps.com/view/Codec) documentation on
-2026-07-21. The 64 KiB Codec 12 and 2048-byte UDP defaults are local safety
-policies; configure lower model-specific limits explicitly when required.
+and [Codec](https://wiki.teltonika-gps.com/view/Codec) documentation.
