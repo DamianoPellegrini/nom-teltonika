@@ -115,6 +115,26 @@ fn should_return_incomplete_at_every_tcp_truncation_position() {
 }
 
 #[test]
+fn should_report_exact_need_at_each_tcp_framing_stage() {
+    let input = bytes(CODEC8);
+    for (end, needed) in [
+        (0, 4),
+        (4, 4),
+        (8, 1),
+        (9, input.len() - 9),
+        (input.len() - 1, 1),
+    ] {
+        assert_eq!(
+            decode_tcp_frame(&input[..end]).unwrap_err(),
+            DecodeError::Incomplete {
+                needed: NonZeroUsize::new(needed).unwrap(),
+            },
+            "unexpected requirement after {end} byte(s)"
+        );
+    }
+}
+
+#[test]
 fn should_consume_only_first_frame_when_frames_are_concatenated() {
     let first = bytes(CODEC8);
     let mut input = first.clone();
@@ -141,12 +161,13 @@ fn should_reject_avl_duplicate_count_mismatch() {
     assert!(matches!(
         decode_tcp_frame(&input),
         Err(DecodeError::Rejected {
+            offset,
             reason: RejectionReason::RecordCountMismatch {
                 first: 1,
                 second: 2
             },
             ..
-        })
+        }) if offset == second_count
     ));
 }
 
@@ -158,6 +179,7 @@ fn should_reject_invalid_priority_generation_and_io_count() {
     assert!(matches!(
         decode_tcp_frame(&priority),
         Err(DecodeError::Rejected {
+            offset: 19,
             reason: RejectionReason::InvalidPriority { value: 3 },
             ..
         })
@@ -169,6 +191,7 @@ fn should_reject_invalid_priority_generation_and_io_count() {
     assert!(matches!(
         decode_tcp_frame(&generation),
         Err(DecodeError::Rejected {
+            offset: 37,
             reason: RejectionReason::InvalidGenerationType { value: 9 },
             ..
         })
@@ -317,6 +340,7 @@ fn should_reject_specific_codec12_batch_failures() {
     assert!(matches!(
         decode_tcp_frame(&mismatched),
         Err(DecodeError::Rejected {
+            offset: 18,
             reason: RejectionReason::Codec12TypeMismatch {
                 expected: 0x05,
                 actual: 0x06,
@@ -339,6 +363,22 @@ fn should_reject_specific_codec12_batch_failures() {
             },
             ..
         })
+    ));
+}
+
+#[test]
+fn should_reject_truncated_bounded_payload_at_field_offset() {
+    let mut input = encode_codec12_command(b"getinfo").unwrap();
+    input[11..15].copy_from_slice(&100u32.to_be_bytes());
+    repair_crc(&mut input);
+
+    assert!(matches!(
+        decode_tcp_frame(&input),
+        Err(DecodeError::Rejected {
+            consumed,
+            offset: 15,
+            reason: RejectionReason::InvalidPayloadLength,
+        }) if consumed == input.len()
     ));
 }
 

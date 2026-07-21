@@ -7,6 +7,11 @@ use crate::protocol_impl::{
     IoValue, Priority, RejectionReason, TcpLimits, UdpDatagram, UdpDecodeError, UdpLimits,
 };
 
+const IMEI_LENGTH: usize = 15;
+const TCP_PREFIX_LENGTH: usize = 8;
+const TCP_CRC_LENGTH: usize = 4;
+const MINIMUM_DATA_LENGTH: usize = 3;
+
 /// Decodes the length-prefixed ASCII IMEI sent at the start of a TCP session.
 ///
 /// The result owns the validated 15 decimal digits. Bytes after the handshake
@@ -29,32 +34,27 @@ use crate::protocol_impl::{
 /// assert_eq!(decoded.consumed, 17);
 /// ```
 pub fn decode_imei(input: &[u8]) -> Result<Decoded<Imei>, DecodeError> {
-    require(input.len(), 2)?;
-    let (length, remaining) = input.split_at(2);
-    let length = usize::from(u16::from_be_bytes(length.try_into().expect("two bytes")));
-    if length != 15 {
+    let mut cursor = SliceCursor::new(input);
+    let length = usize::from(cursor.u16()?);
+    if length != IMEI_LENGTH {
         return Err(DecodeError::Fatal {
             offset: 0,
             reason: FatalReason::InvalidImeiLength {
                 declared: length,
-                expected: 15,
+                expected: IMEI_LENGTH,
             },
         });
     }
-    require(remaining.len(), length)?;
-    let (digits, remaining) = remaining.split_at(length);
-    let consumed = input.len() - remaining.len();
-    let digits: [u8; 15] = digits.try_into().map_err(|_| DecodeError::Rejected {
-        consumed,
-        offset: 0,
-        reason: RejectionReason::InvalidImei,
-    })?;
+    let digits = *cursor.array::<IMEI_LENGTH>()?;
     let value = Imei::new(digits).map_err(|_| DecodeError::Rejected {
-        consumed,
+        consumed: cursor.position(),
         offset: 2,
         reason: RejectionReason::InvalidImei,
     })?;
-    Ok(Decoded { value, consumed })
+    Ok(Decoded {
+        value,
+        consumed: cursor.position(),
+    })
 }
 
 /// Decodes one TCP AVL or Codec 12 frame using [`TcpLimits::default`].
@@ -105,23 +105,21 @@ pub fn decode_tcp_frame_with_limits(
 }
 
 fn decode_tcp_frame_inner(input: &[u8], limits: TcpLimits) -> Result<Decoded<Frame>, DecodeError> {
-    require(input.len(), 4)?;
-    let (preamble, remaining) = input.split_at(4);
-    if preamble != [0; 4] {
+    let mut cursor = SliceCursor::new(input);
+    if cursor.array::<4>()? != &[0; 4] {
         return Err(DecodeError::Fatal {
             offset: 0,
             reason: FatalReason::InvalidPreamble,
         });
     }
-    require(remaining.len(), 4)?;
-    let (data_length, remaining) = remaining.split_at(4);
-    let data_length = u32::from_be_bytes(data_length.try_into().expect("four bytes")) as usize;
-    let total = data_length.checked_add(12).ok_or(DecodeError::Fatal {
-        offset: 4,
-        reason: FatalReason::LengthOverflow,
-    })?;
-    require(remaining.len(), 1)?;
-    let codec_id = remaining[0];
+    let data_length = cursor.u32()? as usize;
+    let total = data_length
+        .checked_add(TCP_PREFIX_LENGTH + TCP_CRC_LENGTH)
+        .ok_or(DecodeError::Fatal {
+            offset: 4,
+            reason: FatalReason::LengthOverflow,
+        })?;
+    let codec_id = cursor.peek_u8()?;
     let limit = if codec_id == 0x0c {
         limits.max_codec12_frame_bytes()
     } else {
@@ -136,14 +134,13 @@ fn decode_tcp_frame_inner(input: &[u8], limits: TcpLimits) -> Result<Decoded<Fra
             },
         });
     }
-    require(remaining.len(), total - 8)?;
-    if data_length < 3 {
+    cursor.ensure(total - TCP_PREFIX_LENGTH)?;
+    if data_length < MINIMUM_DATA_LENGTH {
         return reject(total, 4, RejectionReason::InvalidPayloadLength);
     }
 
-    let (data, remaining) = remaining.split_at(data_length);
-    let (received_crc, _) = remaining.split_at(4);
-    let received_crc = u32::from_be_bytes(received_crc.try_into().expect("four bytes"));
+    let data = cursor.take(data_length)?;
+    let received_crc = cursor.u32()?;
     let expected_crc = crc16(data);
     if received_crc != u32::from(expected_crc) {
         return reject(
@@ -157,9 +154,20 @@ fn decode_tcp_frame_inner(input: &[u8], limits: TcpLimits) -> Result<Decoded<Fra
     }
 
     let value = match codec_id {
-        0x08 | 0x8e | 0x10 => Frame::Avl(decode_avl_packet(data, total, 8)?),
-        0x0c => Frame::Codec12(decode_codec12_packet(data, total, 8)?),
-        codec_id => return reject(total, 8, RejectionReason::UnsupportedCodec { codec_id }),
+        0x08 | 0x8e | 0x10 => Frame::Avl(
+            decode_avl_packet(data).map_err(|error| error.into_decode(total, TCP_PREFIX_LENGTH))?,
+        ),
+        0x0c => Frame::Codec12(
+            decode_codec12_packet(data)
+                .map_err(|error| error.into_decode(total, TCP_PREFIX_LENGTH))?,
+        ),
+        codec_id => {
+            return reject(
+                total,
+                TCP_PREFIX_LENGTH,
+                RejectionReason::UnsupportedCodec { codec_id },
+            );
+        }
     };
     Ok(Decoded {
         value,
@@ -212,10 +220,8 @@ fn decode_udp_datagram_inner(
             actual: input.len(),
         });
     }
-    let (payload_length, remaining) = input.split_at(2);
-    let payload_length = usize::from(u16::from_be_bytes(
-        payload_length.try_into().expect("two bytes"),
-    ));
+    let mut cursor = SliceCursor::new(input);
+    let payload_length = usize::from(cursor.u16()?);
     let total = payload_length + 2;
     if total > limits.max_datagram_bytes() {
         return Err(UdpDecodeError::DatagramTooLarge {
@@ -229,33 +235,33 @@ fn decode_udp_datagram_inner(
             actual: input.len(),
         });
     }
-    let payload = remaining;
     if total < 23 {
         return udp_invalid(2, RejectionReason::InvalidPayloadLength);
     }
-    let channel_packet_id = u16::from_be_bytes(payload[..2].try_into().expect("two bytes"));
-    if payload[2] != 1 {
-        return udp_invalid(4, RejectionReason::InvalidChannel { value: payload[2] });
+    let channel_packet_id = cursor.u16()?;
+    let channel_offset = cursor.position();
+    let channel = cursor.u8()?;
+    if channel != 1 {
+        return udp_invalid(
+            channel_offset,
+            RejectionReason::InvalidChannel { value: channel },
+        );
     }
-    let avl_packet_id = payload[3];
-    let imei_length = usize::from(u16::from_be_bytes(
-        payload[4..6].try_into().expect("two bytes"),
-    ));
-    if imei_length != 15 {
-        return udp_invalid(6, RejectionReason::InvalidImei);
+    let avl_packet_id = cursor.u8()?;
+    let imei_length_offset = cursor.position();
+    let imei_length = usize::from(cursor.u16()?);
+    if imei_length != IMEI_LENGTH {
+        return udp_invalid(imei_length_offset, RejectionReason::InvalidImei);
     }
-    let imei_digits: [u8; 15] = payload[6..21].try_into().expect("fifteen bytes");
+    let imei_offset = cursor.position();
+    let imei_digits = *cursor.array::<IMEI_LENGTH>()?;
     let imei = Imei::new(imei_digits).map_err(|_| UdpDecodeError::Invalid {
-        offset: 8,
+        offset: imei_offset,
         reason: RejectionReason::InvalidImei,
     })?;
-    let packet = decode_avl_packet(&payload[21..], total, 23).map_err(|error| match error {
-        DecodeError::Rejected { offset, reason, .. } => UdpDecodeError::Invalid { offset, reason },
-        DecodeError::Incomplete { .. } | DecodeError::Fatal { .. } => UdpDecodeError::Invalid {
-            offset: 23,
-            reason: RejectionReason::InvalidPayloadLength,
-        },
-    })?;
+    let packet_offset = cursor.position();
+    let packet = decode_avl_packet(cursor.take(cursor.remaining())?)
+        .map_err(|error| error.into_udp(packet_offset))?;
     Ok(UdpDatagram::from_parts(
         channel_packet_id,
         avl_packet_id,
@@ -268,120 +274,98 @@ fn udp_invalid<T>(offset: usize, reason: RejectionReason) -> Result<T, UdpDecode
     Err(UdpDecodeError::Invalid { offset, reason })
 }
 
-fn decode_avl_packet(data: &[u8], consumed: usize, base: usize) -> Result<AvlPacket, DecodeError> {
-    let codec = match data.first().copied() {
-        Some(0x08) => AvlCodec::Codec8,
-        Some(0x8e) => AvlCodec::Codec8Extended,
-        Some(0x10) => AvlCodec::Codec16,
-        Some(codec_id) => {
-            return reject(
-                consumed,
-                base,
+fn decode_avl_packet(data: &[u8]) -> Result<AvlPacket, PacketError> {
+    let mut cursor = SliceCursor::new(data);
+    let codec_offset = cursor.position();
+    let codec_id = cursor.u8()?;
+    let codec = match codec_id {
+        0x08 => AvlCodec::Codec8,
+        0x8e => AvlCodec::Codec8Extended,
+        0x10 => AvlCodec::Codec16,
+        codec_id => {
+            return Err(PacketError::at(
+                codec_offset,
                 RejectionReason::UnsupportedCodec { codec_id },
-            );
+            ));
         }
-        None => return reject(consumed, base, RejectionReason::InvalidPayloadLength),
     };
-    let mut cursor = ByteCursor::new(data);
-    cursor
-        .skip(1)
-        .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
-    let record_count = cursor
-        .u8()
-        .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+    let record_count_offset = cursor.position();
+    let record_count = cursor.u8()?;
     if record_count == 0 {
-        return reject(consumed, base + 1, RejectionReason::EmptyAvlPacket);
+        return Err(PacketError::at(
+            record_count_offset,
+            RejectionReason::EmptyAvlPacket,
+        ));
     }
     let mut records = Vec::with_capacity(usize::from(record_count));
     for _ in 0..record_count {
-        records.push(
-            decode_record(&mut cursor, codec)
-                .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?,
-        );
+        records.push(decode_record(&mut cursor, codec)?);
     }
-    let second_count = cursor
-        .u8()
-        .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+    let second_count_offset = cursor.position();
+    let second_count = cursor.u8()?;
     if record_count != second_count {
-        return reject(
-            consumed,
-            base + cursor.position() - 1,
+        return Err(PacketError::at(
+            second_count_offset,
             RejectionReason::RecordCountMismatch {
                 first: record_count,
                 second: second_count,
             },
-        );
+        ));
     }
     if cursor.remaining() != 0 {
-        return reject(
-            consumed,
-            base + cursor.position(),
+        return Err(PacketError::at(
+            cursor.position(),
             RejectionReason::TrailingData,
-        );
+        ));
     }
     Ok(AvlPacket::from_parts(codec, records))
 }
 
-fn decode_codec12_packet(
-    data: &[u8],
-    consumed: usize,
-    base: usize,
-) -> Result<Codec12Packet, DecodeError> {
-    let mut cursor = ByteCursor::new(data);
-    cursor
-        .skip(1)
-        .map_err(|reason| rejected(consumed, base, reason))?;
-    let first_count = cursor
-        .u8()
-        .map_err(|reason| rejected(consumed, base + 1, reason))?;
+fn decode_codec12_packet(data: &[u8]) -> Result<Codec12Packet, PacketError> {
+    let mut cursor = SliceCursor::new(data);
+    cursor.u8()?;
+    let first_count_offset = cursor.position();
+    let first_count = cursor.u8()?;
     let mut type_id = None;
     let mut payloads = Vec::new();
     while cursor.remaining() > 1 {
         if payloads.len() == usize::from(u8::MAX) {
-            return reject(
-                consumed,
-                base + cursor.position(),
+            return Err(PacketError::at(
+                cursor.position(),
                 RejectionReason::TooManyCodec12Messages {
                     actual: payloads.len() + 1,
                     maximum: usize::from(u8::MAX),
                 },
-            );
+            ));
         }
-        let current_type = cursor
-            .u8()
-            .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+        let type_offset = cursor.position();
+        let current_type = cursor.u8()?;
         if let Some(expected) = type_id.filter(|expected| *expected != current_type) {
-            return reject(
-                consumed,
-                base + cursor.position() - 1,
+            return Err(PacketError::at(
+                type_offset,
                 RejectionReason::Codec12TypeMismatch {
                     expected,
                     actual: current_type,
                 },
-            );
+            ));
         }
         type_id.get_or_insert(current_type);
-        let length = cursor
-            .u32()
-            .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?
-            as usize;
-        let payload = cursor
-            .take(length)
-            .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+        let length = cursor.u32()? as usize;
+        let payload = cursor.take(length)?;
         payloads.push(payload.to_vec());
     }
     if payloads.is_empty() {
-        return reject(consumed, base + 1, RejectionReason::EmptyCodec12Batch);
+        return Err(PacketError::at(
+            first_count_offset,
+            RejectionReason::EmptyCodec12Batch,
+        ));
     }
-    let second_count = cursor
-        .u8()
-        .map_err(|reason| rejected(consumed, base + cursor.position(), reason))?;
+    let second_count = cursor.u8()?;
     if cursor.remaining() != 0 {
-        return reject(
-            consumed,
-            base + cursor.position(),
+        return Err(PacketError::at(
+            cursor.position(),
             RejectionReason::TrailingData,
-        );
+        ));
     }
     let count_status = if first_count == second_count {
         CountStatus::Matched
@@ -407,16 +391,18 @@ fn decode_codec12_packet(
     ))
 }
 
-fn decode_record(
-    cursor: &mut ByteCursor<'_>,
-    codec: AvlCodec,
-) -> Result<AvlRecord, RejectionReason> {
+fn decode_record(cursor: &mut SliceCursor<'_>, codec: AvlCodec) -> Result<AvlRecord, PacketError> {
     let timestamp = AvlTimestamp::from_unix_millis(cursor.u64()?);
     let priority = match cursor.u8()? {
         0 => Priority::Low,
         1 => Priority::High,
         2 => Priority::Panic,
-        value => return Err(RejectionReason::InvalidPriority { value }),
+        value => {
+            return Err(PacketError::at(
+                cursor.position(),
+                RejectionReason::InvalidPriority { value },
+            ));
+        }
     };
     let gps = GpsElement {
         longitude_raw: cursor.i32()?,
@@ -440,7 +426,12 @@ fn decode_record(
             5 => GenerationType::OnChange,
             6 => GenerationType::Eventual,
             7 => GenerationType::Periodical,
-            value => return Err(RejectionReason::InvalidGenerationType { value }),
+            value => {
+                return Err(PacketError::at(
+                    cursor.position(),
+                    RejectionReason::InvalidGenerationType { value },
+                ));
+            }
         })
     } else {
         None
@@ -450,9 +441,9 @@ fn decode_record(
     let mut elements = Vec::new();
     for width in [1usize, 2, 4, 8] {
         let count = read_count(cursor, codec)?;
-        decoded = decoded
-            .checked_add(count)
-            .ok_or(RejectionReason::InvalidPayloadLength)?;
+        decoded = decoded.checked_add(count).ok_or_else(|| {
+            PacketError::at(cursor.position(), RejectionReason::InvalidPayloadLength)
+        })?;
         for _ in 0..count {
             let id = read_id(cursor, codec)?;
             let value = match width {
@@ -470,9 +461,9 @@ fn decode_record(
     }
     if codec == AvlCodec::Codec8Extended {
         let count = read_count(cursor, codec)?;
-        decoded = decoded
-            .checked_add(count)
-            .ok_or(RejectionReason::InvalidPayloadLength)?;
+        decoded = decoded.checked_add(count).ok_or_else(|| {
+            PacketError::at(cursor.position(), RejectionReason::InvalidPayloadLength)
+        })?;
         for _ in 0..count {
             let id = cursor.u16()?;
             let length = usize::from(cursor.u16()?);
@@ -484,10 +475,13 @@ fn decode_record(
         }
     }
     if declared_count != decoded {
-        return Err(RejectionReason::IoCountMismatch {
-            declared: declared_count,
-            decoded,
-        });
+        return Err(PacketError::at(
+            cursor.position(),
+            RejectionReason::IoCountMismatch {
+                declared: declared_count,
+                decoded,
+            },
+        ));
     }
     Ok(AvlRecord {
         timestamp,
@@ -499,85 +493,135 @@ fn decode_record(
     })
 }
 
-fn read_count(cursor: &mut ByteCursor<'_>, codec: AvlCodec) -> Result<u16, RejectionReason> {
+fn read_count(cursor: &mut SliceCursor<'_>, codec: AvlCodec) -> Result<u16, PacketError> {
     match codec {
         AvlCodec::Codec8 | AvlCodec::Codec16 => Ok(u16::from(cursor.u8()?)),
-        AvlCodec::Codec8Extended => cursor.u16(),
+        AvlCodec::Codec8Extended => Ok(cursor.u16()?),
     }
 }
 
-fn read_id(cursor: &mut ByteCursor<'_>, codec: AvlCodec) -> Result<u16, RejectionReason> {
+fn read_id(cursor: &mut SliceCursor<'_>, codec: AvlCodec) -> Result<u16, PacketError> {
     match codec {
         AvlCodec::Codec8 => Ok(u16::from(cursor.u8()?)),
-        AvlCodec::Codec8Extended | AvlCodec::Codec16 => cursor.u16(),
+        AvlCodec::Codec8Extended | AvlCodec::Codec16 => Ok(cursor.u16()?),
     }
 }
 
-#[derive(Clone, Copy)]
-struct ByteCursor<'a> {
+struct SliceCursor<'a> {
     input: &'a [u8],
     position: usize,
 }
 
-impl<'a> ByteCursor<'a> {
+impl<'a> SliceCursor<'a> {
     const fn new(input: &'a [u8]) -> Self {
         Self { input, position: 0 }
     }
-    const fn position(self) -> usize {
+    const fn position(&self) -> usize {
         self.position
     }
-    const fn remaining(self) -> usize {
+    const fn remaining(&self) -> usize {
         self.input.len() - self.position
     }
 
-    fn take(&mut self, length: usize) -> Result<&'a [u8], RejectionReason> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(RejectionReason::InvalidPayloadLength)?;
-        let value = self
-            .input
-            .get(self.position..end)
-            .ok_or(RejectionReason::InvalidPayloadLength)?;
+    fn ensure(&self, length: usize) -> Result<(), UnexpectedEnd> {
+        if self.remaining() >= length {
+            return Ok(());
+        }
+        Err(UnexpectedEnd {
+            offset: self.position,
+            needed: NonZeroUsize::new(length - self.remaining())
+                .expect("insufficient input has a positive deficit"),
+        })
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], UnexpectedEnd> {
+        self.ensure(length)?;
+        let start = self.position;
+        let end = start + length;
+        let value = &self.input[start..end];
         self.position = end;
         Ok(value)
     }
 
-    fn skip(&mut self, length: usize) -> Result<(), RejectionReason> {
-        self.take(length).map(|_| ())
+    fn array<const LENGTH: usize>(&mut self) -> Result<&'a [u8; LENGTH], UnexpectedEnd> {
+        Ok(self
+            .take(LENGTH)?
+            .try_into()
+            .expect("take returns the requested number of bytes"))
     }
-    fn u8(&mut self) -> Result<u8, RejectionReason> {
+    fn peek_u8(&self) -> Result<u8, UnexpectedEnd> {
+        self.ensure(1)?;
+        Ok(self.input[self.position])
+    }
+    fn u8(&mut self) -> Result<u8, UnexpectedEnd> {
         Ok(self.take(1)?[0])
     }
-    fn u16(&mut self) -> Result<u16, RejectionReason> {
-        Ok(u16::from_be_bytes(
-            self.take(2)?.try_into().expect("two bytes"),
-        ))
+    fn u16(&mut self) -> Result<u16, UnexpectedEnd> {
+        Ok(u16::from_be_bytes(*self.array()?))
     }
-    fn u32(&mut self) -> Result<u32, RejectionReason> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
-        ))
+    fn u32(&mut self) -> Result<u32, UnexpectedEnd> {
+        Ok(u32::from_be_bytes(*self.array()?))
     }
-    fn u64(&mut self) -> Result<u64, RejectionReason> {
-        Ok(u64::from_be_bytes(
-            self.take(8)?.try_into().expect("eight bytes"),
-        ))
+    fn u64(&mut self) -> Result<u64, UnexpectedEnd> {
+        Ok(u64::from_be_bytes(*self.array()?))
     }
-    fn i32(&mut self) -> Result<i32, RejectionReason> {
-        Ok(i32::from_be_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
-        ))
+    fn i32(&mut self) -> Result<i32, UnexpectedEnd> {
+        Ok(i32::from_be_bytes(*self.array()?))
     }
 }
 
-fn require(actual: usize, needed: usize) -> Result<(), DecodeError> {
-    if actual >= needed {
-        Ok(())
-    } else {
-        Err(DecodeError::Incomplete {
-            needed: NonZeroUsize::new(needed - actual).expect("positive difference"),
-        })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnexpectedEnd {
+    offset: usize,
+    needed: NonZeroUsize,
+}
+
+impl From<UnexpectedEnd> for DecodeError {
+    fn from(error: UnexpectedEnd) -> Self {
+        Self::Incomplete {
+            needed: error.needed,
+        }
+    }
+}
+
+impl From<UnexpectedEnd> for UdpDecodeError {
+    fn from(error: UnexpectedEnd) -> Self {
+        Self::Invalid {
+            offset: error.offset,
+            reason: RejectionReason::InvalidPayloadLength,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PacketError {
+    offset: usize,
+    reason: RejectionReason,
+}
+
+impl PacketError {
+    const fn at(offset: usize, reason: RejectionReason) -> Self {
+        Self { offset, reason }
+    }
+
+    const fn into_decode(self, consumed: usize, base: usize) -> DecodeError {
+        rejected(consumed, base + self.offset, self.reason)
+    }
+
+    const fn into_udp(self, base: usize) -> UdpDecodeError {
+        UdpDecodeError::Invalid {
+            offset: base + self.offset,
+            reason: self.reason,
+        }
+    }
+}
+
+impl From<UnexpectedEnd> for PacketError {
+    fn from(error: UnexpectedEnd) -> Self {
+        Self {
+            offset: error.offset,
+            reason: RejectionReason::InvalidPayloadLength,
+        }
     }
 }
 
@@ -670,3 +714,38 @@ fn trace_udp_result(result: &Result<UdpDatagram, UdpDecodeError>) {
 
 #[cfg(not(feature = "tracing"))]
 fn trace_udp_result(_: &Result<UdpDatagram, UdpDecodeError>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_cursor_reads_big_endian_values_without_copying_slices() {
+        let input = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde];
+        let mut cursor = SliceCursor::new(&input);
+
+        assert_eq!(cursor.u16().unwrap(), 0x1234);
+        assert_eq!(cursor.u32().unwrap(), 0x56789abc);
+        let tail = cursor.take(1).unwrap();
+
+        assert_eq!(tail, &[0xde]);
+        assert!(std::ptr::eq(tail.as_ptr(), input[6..].as_ptr()));
+        assert_eq!(cursor.position(), input.len());
+        assert_eq!(cursor.remaining(), 0);
+    }
+
+    #[test]
+    fn slice_cursor_reports_exact_need_without_advancing_on_failure() {
+        let mut cursor = SliceCursor::new(&[0xaa]);
+        assert_eq!(cursor.u8().unwrap(), 0xaa);
+
+        assert_eq!(
+            cursor.u32().unwrap_err(),
+            UnexpectedEnd {
+                offset: 1,
+                needed: NonZeroUsize::new(4).unwrap(),
+            }
+        );
+        assert_eq!(cursor.position(), 1);
+    }
+}
