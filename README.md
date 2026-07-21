@@ -4,7 +4,6 @@
 [![crates.io downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
 [![docs.rs](https://img.shields.io/docsrs/nom-teltonika?style=flat-square)](https://docs.rs/nom-teltonika)
 [![CI](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/ci.yml)
-[![security audit](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/audit.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/audit.yml)
 [![license](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
 [![GitHub stars](https://img.shields.io/github/stars/DamianoPellegrini/nom-teltonika?style=social)](https://github.com/DamianoPellegrini/nom-teltonika)
 
@@ -264,9 +263,6 @@ No feature is enabled by default.
 
 See [the 0.2 migration guide](docs/migration-0.2.md) for the complete breaking
 rename and behavior changes.
-
-For production ingestion and ACK durability trade-offs, see the
-[illustrative ingestion pipeline](docs/ingestion-pipeline.md).
 
 ## Model assumptions
 
