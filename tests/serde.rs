@@ -1,19 +1,25 @@
 #![cfg(feature = "serde")]
-use std::{
-    fs::File,
-    io::{BufWriter, Read},
-};
 
-use nom_teltonika::*;
+use nom_teltonika::{Imei, Limits, parse_tcp_frame};
 
 #[test]
-fn parse_file() {
-    // Load test.bin
-    let mut file = File::open("tests/test.bin").expect("Can't open bin file");
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).expect("Can't read bin file");
-    // Parse test.bin
-    let (_, frame) = parser::tcp_frame(&buffer).expect("Can't parse frame");
-    let writer = BufWriter::new(File::create("tests/test.json").expect("Can't create json file"));
-    serde_json::to_writer_pretty(writer, &frame).expect("Can't serialize frame to json");
+fn should_serialize_wire_model_when_serde_is_enabled() {
+    let input = hex::decode("000000000000000F0C010500000007676574696E666F0100004312").unwrap();
+    let frame = parse_tcp_frame(&input).unwrap().value;
+    let value = serde_json::to_value(frame).unwrap();
+    assert_eq!(
+        value["Codec12"]["message"]["Command"][0],
+        serde_json::json!([103, 101, 116, 105, 110, 102, 111])
+    );
+}
+
+#[test]
+fn should_reject_invalid_validated_values_when_deserializing() {
+    assert!(serde_json::from_str::<Imei>("\"12345678901234x\"").is_err());
+    let invalid_limits = r#"{
+        "max_avl_wire_bytes": 0,
+        "max_codec12_wire_bytes": 65536,
+        "max_udp_wire_bytes": 2048
+    }"#;
+    assert!(serde_json::from_str::<Limits>(invalid_limits).is_err());
 }

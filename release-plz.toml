@@ -1,0 +1,3 @@
+[workspace]
+semver_check = true
+release_always = false

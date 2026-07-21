@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use nom_teltonika::TeltonikaStream;
+use nom_teltonika::{Frame, TeltonikaStream};
 
 fn main() {
     // Write getinfo command to the device
@@ -15,6 +15,8 @@ fn main() {
     // Read back as if it was a response
     buffer = hex::decode("000000000000000F0C010600000007676574696E666F0100008017").unwrap();
     stream = TeltonikaStream::new(Cursor::new(buffer));
-    let frame = stream.read_frame().unwrap().unwrap_gprs();
-    println!("{frame:#?}");
+    let Frame::Codec12(packet) = stream.read_frame().unwrap() else {
+        panic!("expected a Codec 12 response");
+    };
+    println!("{packet:#?}");
 }

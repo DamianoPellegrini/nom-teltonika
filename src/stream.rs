@@ -1,480 +1,373 @@
-use std::io;
+use std::{error::Error, fmt, io};
 
-#[cfg(feature = "tokio")]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::{
+    Frame, Limits, LimitsError, ParseError, encode_avl_ack, encode_avl_nack,
+    encode_codec12_commands, encode_imei_approval, parse_tcp_frame_with_limits,
+};
 
-use crate::{AVLDatagram, Codec, TeltonikaFrame};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamConfig {
+    pub read_size: usize,
+    pub limits: Limits,
+}
 
-const DEFAULT_IMEI_BUF_CAPACITY: usize = 128;
-const DEFAULT_PACKET_BUF_CAPACITY: usize = 2048;
+impl StreamConfig {
+    pub fn new(read_size: usize, limits: Limits) -> Result<Self, StreamConfigError> {
+        let config = Self { read_size, limits };
+        config.validate()?;
+        Ok(config)
+    }
 
-/// A wrapper around a Stream for reading and writing Teltonika GPS module data.
+    fn validate(self) -> Result<(), StreamConfigError> {
+        if self.read_size == 0 {
+            return Err(StreamConfigError::ZeroReadSize);
+        }
+        self.limits
+            .validate()
+            .map_err(StreamConfigError::InvalidLimits)
+    }
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            read_size: 4 * 1024,
+            limits: Limits::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamConfigError {
+    ZeroReadSize,
+    InvalidLimits(LimitsError),
+}
+
+impl fmt::Display for StreamConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroReadSize => f.write_str("stream read size must be non-zero"),
+            Self::InvalidLimits(error) => write!(f, "invalid stream limits: {error}"),
+        }
+    }
+}
+
+impl Error for StreamConfigError {}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum StreamError {
+    Closed,
+    Truncated { buffered: usize },
+    Parse(ParseError),
+    Io(io::Error),
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => f.write_str("stream closed at a frame boundary"),
+            Self::Truncated { buffered } => {
+                write!(f, "stream closed with {buffered} buffered byte(s)")
+            }
+            Self::Parse(error) => error.fmt(f),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for StreamError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Parse(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Closed | Self::Truncated { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for StreamError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
 pub struct TeltonikaStream<S> {
     inner: S,
-    imei_buf_capacity: usize,
-    packet_buf_capacity: usize,
+    config: StreamConfig,
+    receive: ReceiveBuffer,
+    read_chunk: Vec<u8>,
 }
 
 impl<S> TeltonikaStream<S> {
-    /// Creates a new [`TeltonikaStream`] from an existing TCP stream.
     pub fn new(inner: S) -> Self {
-        Self {
+        Self::with_config(inner, StreamConfig::default()).expect("default stream config is valid")
+    }
+
+    pub fn with_config(inner: S, config: StreamConfig) -> Result<Self, StreamConfigError> {
+        config.validate()?;
+        Ok(Self {
             inner,
-            imei_buf_capacity: DEFAULT_IMEI_BUF_CAPACITY,
-            packet_buf_capacity: DEFAULT_PACKET_BUF_CAPACITY,
-        }
+            config,
+            receive: ReceiveBuffer::new(config.read_size),
+            read_chunk: vec![0; config.read_size],
+        })
     }
 
-    /// Creates a new [`TeltonikaStream`] with custom buffer capacities.
-    pub fn with_capacity(inner: S, imei_buf_capacity: usize, packet_buf_capacity: usize) -> Self {
-        let mut stream = Self::new(inner);
-        stream.imei_buf_capacity = imei_buf_capacity;
-        stream.packet_buf_capacity = packet_buf_capacity;
-        stream
+    pub fn get_ref(&self) -> &S {
+        &self.inner
     }
-
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
     pub fn into_inner(self) -> S {
         self.inner
     }
-
-    pub fn inner(&self) -> &S {
-        &self.inner
-    }
-    pub fn inner_mut(&mut self) -> &mut S {
-        &mut self.inner
+    pub const fn config(&self) -> StreamConfig {
+        self.config
     }
 }
 
-impl<S: io::Read + io::Write> TeltonikaStream<S> {
-    /// Reads the IMEI (International Mobile Equipment Identity) from the stream.
-    /// Returns the IMEI as a string.
-    ///
-    /// # Errors
-    ///
-    /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
-    ///
-    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
-    /// If the IMEI cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
-    pub fn read_imei(&mut self) -> io::Result<String> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.imei_buf_capacity * 2);
-
-        // Read bytes until they are enough
+impl<S: io::Read> TeltonikaStream<S> {
+    pub fn read_frame(&mut self) -> Result<Frame, StreamError> {
         loop {
-            let mut recv_buf = vec![0u8; self.imei_buf_capacity];
-            let bytes_read = self.inner.read(&mut recv_buf[..])?;
-
-            if bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "Connection closed",
-                ));
-            }
-
-            parse_buf.extend_from_slice(&recv_buf[..bytes_read]);
-
-            let frame_parser_result = crate::parser::imei(&parse_buf[..]);
-
-            match frame_parser_result {
-                Ok((_, imei)) => return Ok(imei),
-                Err(nom::Err::Incomplete(_)) => continue,
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
+            match parse_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
+                Ok(parsed) => {
+                    self.receive.consume(parsed.consumed);
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!(
+                        consumed = parsed.consumed,
+                        buffered = self.receive.len(),
+                        codec_id = parsed.value.codec_id(),
+                        "decoded TCP frame"
+                    );
+                    return Ok(parsed.value);
                 }
+                Err(ParseError::Incomplete { .. }) => {}
+                Err(error @ ParseError::Rejected { consumed, .. }) => {
+                    self.receive.consume(consumed);
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        consumed,
+                        buffered = self.receive.len(),
+                        "rejected delimited TCP frame"
+                    );
+                    return Err(StreamError::Parse(error));
+                }
+                Err(error) => return Err(StreamError::Parse(error)),
             }
+
+            let read = self.inner.read(&mut self.read_chunk)?;
+            if read == 0 {
+                return if self.receive.is_empty() {
+                    Err(StreamError::Closed)
+                } else {
+                    Err(StreamError::Truncated {
+                        buffered: self.receive.len(),
+                    })
+                };
+            }
+            self.receive.extend(&self.read_chunk[..read]);
+            #[cfg(feature = "tracing")]
+            tracing::trace!(read, buffered = self.receive.len(), "read TCP bytes");
         }
     }
+}
 
-    /// Reads an AVLFrame from the stream.
-    /// Returns the parsed AVLFrame.
-    ///
-    /// # Errors
-    ///
-    /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
-    ///
-    /// If no bytes are read from the stream, it either means that a command response of length 0 has been sent or that the stream has been closed.
-    /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
-    pub fn read_frame(&mut self) -> io::Result<TeltonikaFrame> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
-
-        // Read bytes until they are enough
-        loop {
-            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
-            let bytes_read = self.inner.read(&mut revc_buf)?;
-
-            // Since teltonika devices can send 0 bytes command responses this needs to be removed
-            // if bytes_read == 0 {
-            //     return Err(io::Error::new(
-            //         io::ErrorKind::ConnectionReset,
-            //         "Connection closed",
-            //     ));
-            // }
-
-            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
-
-            let frame_parser_result = crate::parser::tcp_frame(&parse_buf[..]);
-
-            match frame_parser_result {
-                Ok((_, frame)) => {
-                    return Ok(frame);
-                }
-                Err(nom::Err::Incomplete(_)) => {
-                    continue;
-                }
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
-                }
-            }
-        }
+impl<S: io::Write> TeltonikaStream<S> {
+    pub fn write_imei_approval(&mut self, accepted: bool) -> Result<(), StreamError> {
+        self.write_flushed(&encode_imei_approval(accepted))
     }
 
-    pub fn read_datagram(&mut self) -> io::Result<AVLDatagram> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
-
-        // Read bytes until they are enough
-        loop {
-            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
-            let bytes_read = self.inner.read(&mut revc_buf)?;
-
-            if bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "Connection closed",
-                ));
-            }
-
-            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
-
-            let datagram_parser_result = crate::parser::udp_datagram(&parse_buf[..]);
-
-            match datagram_parser_result {
-                Ok((_, datagram)) => {
-                    return Ok(datagram);
-                }
-                Err(nom::Err::Incomplete(_)) => {
-                    continue;
-                }
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
-                }
-            }
-        }
+    pub fn write_avl_ack(&mut self, accepted_records: u32) -> Result<(), StreamError> {
+        self.write_flushed(&encode_avl_ack(accepted_records))
     }
 
-    /// Writes an IMEI approval signal to the stream.
-    pub fn write_imei_approval(&mut self) -> io::Result<()> {
-        self.inner.write_all(&1u8.to_be_bytes())?;
-        self.inner.flush()
+    pub fn write_avl_nack(&mut self) -> Result<(), StreamError> {
+        self.write_flushed(&encode_avl_nack())
     }
 
-    /// Writes an IMEI denial signal to the stream.
-    pub fn write_imei_denial(&mut self) -> io::Result<()> {
-        self.inner.write_all(&0u8.to_be_bytes())?;
-        self.inner.flush()
+    pub fn write_command(&mut self, command: impl AsRef<[u8]>) -> Result<(), StreamError> {
+        self.write_commands([command.as_ref()])
     }
 
-    /// Writes a frame ACK (acknowledgment) to the stream.
-    /// If `ack` is `None`, writes a zero value.
-    pub fn write_frame_ack(&mut self, frame: Option<&TeltonikaFrame>) -> io::Result<()> {
-        let ack: u32 = frame
-            .map(|v| match v {
-                TeltonikaFrame::AVL(avlframe) => avlframe.records.len() as u32,
-                TeltonikaFrame::GPRS(gprsframe) => gprsframe.command_responses.len() as u32,
-            })
-            .unwrap_or(0);
-        self.inner.write_all(&ack.to_be_bytes())?;
-        self.inner.flush()
+    pub fn write_commands<'a>(
+        &mut self,
+        commands: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<(), StreamError> {
+        self.write_flushed(&encode_codec12_commands(commands))
     }
 
-    pub fn write_datagram_ack(&mut self, datagram: Option<&AVLDatagram>) -> io::Result<()> {
-        let (length, packet_id, avl_packet_id, ack) = match datagram {
-            Some(datagram) => (
-                datagram.records.len() as u16,
-                datagram.packet_id,
-                datagram.avl_packet_id,
-                datagram.records.len() as u32,
-            ),
-            None => (0, 0, 0, 0),
-        };
-        self.inner.write_all(&length.to_be_bytes())?;
-        self.inner.write_all(&packet_id.to_be_bytes())?;
-        self.inner.write_all(b"\x01")?; // Non usable-byte
-        self.inner.write_all(&avl_packet_id.to_be_bytes())?;
-        self.inner.write_all(&ack.to_be_bytes())?;
-        self.inner.flush()
-    }
-
-    /// Writes a series of commands to the stream.
-    pub fn write_commands(&mut self, commands: &[&str]) -> io::Result<()> {
-        let data_size: usize = std::mem::size_of::<Codec>() + // codec
-        						std::mem::size_of::<u8>() + // command qty1
-              					std::mem::size_of::<u8>() + // command type
-                   				commands
-                       				.iter()
-                           			.fold(0, |acc, e| acc + (std::mem::size_of::<u32>() + e.bytes().len())) + // command size + command string
-                       			std::mem::size_of::<u8>(); // command qty2
-
-        let header_size = std::mem::size_of::<u32>() + // preamble
-        							std::mem::size_of::<u32>(); // data size
-        let buffer_size = header_size + data_size + std::mem::size_of::<u32>(); // CRC 16
-
-        let mut commands_buffer = Vec::with_capacity(buffer_size);
-        commands_buffer.extend([0x00, 0x00, 0x00, 0x00].iter()); // preamble
-        commands_buffer.extend((data_size as u32).to_be_bytes().iter()); // data size
-        commands_buffer.push(Codec::C12.into()); // codec
-        commands_buffer.push(commands.len() as u8); // Qty1
-        commands_buffer.push(0x05u8); // Command type
-        commands_buffer.extend(commands.iter().flat_map(|command| {
-            let mut command_buffer =
-                Vec::with_capacity(std::mem::size_of::<u32>() + command.bytes().len());
-
-            command_buffer.extend((command.bytes().len() as u32).to_be_bytes());
-            command_buffer.extend(command.bytes()); // no call to to_be_bytes needed because it writes single bytes
-
-            command_buffer
-        }));
-        commands_buffer.push(commands.len() as u8); // Qty2
-        commands_buffer.extend(
-            (crate::crc16(&commands_buffer[header_size..]) as u32)
-                .to_be_bytes()
-                .iter(),
-        ); // crc 16
-
-        self.inner.write_all(&commands_buffer)?;
-        self.inner.flush()
-    }
-
-    /// Writes a single command to the stream.
-    pub fn write_command(&mut self, command: &str) -> io::Result<()> {
-        self.write_commands(&[command])
+    fn write_flushed(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+        self.inner.write_all(bytes)?;
+        self.inner.flush()?;
+        #[cfg(feature = "tracing")]
+        tracing::trace!(written = bytes.len(), "wrote and flushed protocol response");
+        Ok(())
     }
 }
 
 #[cfg(feature = "tokio")]
-impl<S: AsyncReadExt + AsyncWriteExt + Unpin> TeltonikaStream<S> {
-    /// Reads the IMEI (International Mobile Equipment Identity) from the stream.
-    /// Returns the IMEI as a string.
-    ///
-    /// # Errors
-    ///
-    /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
-    ///
-    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
-    /// If the IMEI cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
-    pub async fn read_imei_async(&mut self) -> io::Result<String> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.imei_buf_capacity * 2);
+impl<S: tokio::io::AsyncRead + Unpin> TeltonikaStream<S> {
+    pub async fn read_frame_async(&mut self) -> Result<Frame, StreamError> {
+        use tokio::io::AsyncReadExt;
 
-        // Read bytes until they are enough
         loop {
-            let mut recv_buf = vec![0u8; self.imei_buf_capacity];
-            let bytes_read = self.inner.read(&mut recv_buf[..]).await?;
-
-            if bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "Connection closed",
-                ));
-            }
-
-            parse_buf.extend_from_slice(&recv_buf[..bytes_read]);
-
-            let frame_parser_result = crate::parser::imei(&parse_buf[..]);
-
-            match frame_parser_result {
-                Ok((_, imei)) => return Ok(imei),
-                Err(nom::Err::Incomplete(_)) => continue,
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
+            match parse_tcp_frame_with_limits(self.receive.readable(), self.config.limits) {
+                Ok(parsed) => {
+                    self.receive.consume(parsed.consumed);
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!(
+                        consumed = parsed.consumed,
+                        buffered = self.receive.len(),
+                        codec_id = parsed.value.codec_id(),
+                        "decoded TCP frame"
+                    );
+                    return Ok(parsed.value);
                 }
+                Err(ParseError::Incomplete { .. }) => {}
+                Err(error @ ParseError::Rejected { consumed, .. }) => {
+                    self.receive.consume(consumed);
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        consumed,
+                        buffered = self.receive.len(),
+                        "rejected delimited TCP frame"
+                    );
+                    return Err(StreamError::Parse(error));
+                }
+                Err(error) => return Err(StreamError::Parse(error)),
             }
+            let read = self.inner.read(&mut self.read_chunk).await?;
+            if read == 0 {
+                return if self.receive.is_empty() {
+                    Err(StreamError::Closed)
+                } else {
+                    Err(StreamError::Truncated {
+                        buffered: self.receive.len(),
+                    })
+                };
+            }
+            self.receive.extend(&self.read_chunk[..read]);
+            #[cfg(feature = "tracing")]
+            tracing::trace!(
+                read,
+                buffered = self.receive.len(),
+                "read TCP bytes asynchronously"
+            );
         }
     }
+}
 
-    /// Reads an AVLFrame from the stream.
-    /// Returns the parsed AVLFrame.
+#[cfg(feature = "tokio")]
+impl<S: tokio::io::AsyncWrite + Unpin> TeltonikaStream<S> {
+    /// Writes and flushes an IMEI decision.
     ///
-    /// # Errors
+    /// This operation is not cancellation-safe. Close the connection after a
+    /// cancelled or otherwise partial write.
+    pub async fn write_imei_approval_async(&mut self, accepted: bool) -> Result<(), StreamError> {
+        self.write_flushed_async(&encode_imei_approval(accepted))
+            .await
+    }
+
+    /// Writes and flushes an AVL acknowledgment.
     ///
-    /// If this function encounters any form of I/O or other error, an error variant will be returned as in [`Read::read`].
+    /// This operation is not cancellation-safe. Close the connection after a
+    /// cancelled or otherwise partial write.
+    pub async fn write_avl_ack_async(&mut self, accepted_records: u32) -> Result<(), StreamError> {
+        self.write_flushed_async(&encode_avl_ack(accepted_records))
+            .await
+    }
+
+    /// Writes and flushes an AVL negative acknowledgment.
     ///
-    /// If no bytes are read from the stream, an error kind of [`std::io::ErrorKind::ConnectionReset`] is returned.
-    /// If the frame cannot be parsed, an error kind of [`std::io::ErrorKind::InvalidData`] is returned.
-    pub async fn read_frame_async(&mut self) -> io::Result<TeltonikaFrame> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
-
-        // Read bytes until they are enough
-        loop {
-            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
-            let bytes_read = self.inner.read(&mut revc_buf).await?;
-
-            // Since teltonika devices can send 0 bytes command responses this needs to be removed
-            // if bytes_read == 0 {
-            //     return Err(io::Error::new(
-            //         io::ErrorKind::ConnectionReset,
-            //         "Connection closed",
-            //     ));
-            // }
-
-            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
-
-            let frame_parser_result = crate::parser::tcp_frame(&parse_buf[..]);
-
-            match frame_parser_result {
-                Ok((_, frame)) => {
-                    return Ok(frame);
-                }
-                Err(nom::Err::Incomplete(_)) => {
-                    continue;
-                }
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
-                }
-            }
-        }
+    /// This operation is not cancellation-safe. Close the connection after a
+    /// cancelled or otherwise partial write.
+    pub async fn write_avl_nack_async(&mut self) -> Result<(), StreamError> {
+        self.write_flushed_async(&encode_avl_nack()).await
     }
 
-    pub async fn read_datagram_async(&mut self) -> io::Result<AVLDatagram> {
-        let mut parse_buf: Vec<u8> = Vec::with_capacity(self.packet_buf_capacity * 2);
-
-        // Read bytes until they are enough
-        loop {
-            let mut revc_buf = vec![0u8; self.packet_buf_capacity];
-            let bytes_read = self.inner.read(&mut revc_buf).await?;
-
-            if bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "Connection closed",
-                ));
-            }
-
-            parse_buf.extend_from_slice(&revc_buf[..bytes_read]);
-
-            let datagram_parser_result = crate::parser::udp_datagram(&parse_buf[..]);
-
-            match datagram_parser_result {
-                Ok((_, datagram)) => {
-                    return Ok(datagram);
-                }
-                Err(nom::Err::Incomplete(_)) => {
-                    continue;
-                }
-                Err(nom::Err::Error(e) | nom::Err::Failure(e)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        nom::Err::Failure(nom::error::Error::new(e.input.to_owned(), e.code)),
-                    ))
-                }
-            }
-        }
-    }
-
-    /// Writes an IMEI approval signal to the stream.
-    pub async fn write_imei_approval_async(&mut self) -> io::Result<()> {
-        self.inner.write_all(&1u8.to_be_bytes()).await?;
-        self.inner.flush().await
-    }
-
-    /// Writes an IMEI denial signal to the stream.
-    pub async fn write_imei_denial_async(&mut self) -> io::Result<()> {
-        self.inner.write_all(&0u8.to_be_bytes()).await?;
-        self.inner.flush().await
-    }
-
-    /// Writes a frame ACK (acknowledgment) to the stream.
-    /// If `ack` is `None`, writes a zero value.
-    pub async fn write_frame_ack_async(
+    /// Writes and flushes one Codec 12 command.
+    ///
+    /// This operation is not cancellation-safe. Close the connection after a
+    /// cancelled or otherwise partial write.
+    pub async fn write_command_async(
         &mut self,
-        frame: Option<&TeltonikaFrame>,
-    ) -> io::Result<()> {
-        let ack: u32 = frame
-            .map(|v| match v {
-                TeltonikaFrame::AVL(avlframe) => avlframe.records.len() as u32,
-                TeltonikaFrame::GPRS(gprsframe) => gprsframe.command_responses.len() as u32,
-            })
-            .unwrap_or(0);
-        self.inner.write_all(&ack.to_be_bytes()).await?;
-        self.inner.flush().await
+        command: impl AsRef<[u8]>,
+    ) -> Result<(), StreamError> {
+        self.write_commands_async([command.as_ref()]).await
     }
 
-    pub async fn write_datagram_ack_async(
+    /// Writes and flushes a Codec 12 command batch.
+    ///
+    /// This operation is not cancellation-safe. Close the connection after a
+    /// cancelled or otherwise partial write.
+    pub async fn write_commands_async<'a>(
         &mut self,
-        datagram: Option<&AVLDatagram>,
-    ) -> io::Result<()> {
-        let (length, packet_id, avl_packet_id, ack) = match datagram {
-            Some(datagram) => (
-                datagram.records.len() as u16,
-                datagram.packet_id,
-                datagram.avl_packet_id,
-                datagram.records.len() as u32,
-            ),
-            None => (0, 0, 0, 0),
-        };
-        self.inner.write_all(&length.to_be_bytes()).await?;
-        self.inner.write_all(&packet_id.to_be_bytes()).await?;
-        self.inner.write_all(b"\x01").await?; // Non usable-byte
-        self.inner.write_all(&avl_packet_id.to_be_bytes()).await?;
-        self.inner.write_all(&ack.to_be_bytes()).await?;
-        self.inner.flush().await
+        commands: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<(), StreamError> {
+        self.write_flushed_async(&encode_codec12_commands(commands))
+            .await
     }
 
-    /// Writes a series of commands to the stream.
-    pub async fn write_commands_async(&mut self, commands: &[&str]) -> io::Result<()> {
-        let header_size = std::mem::size_of::<u32>() + // preamble
-        							std::mem::size_of::<u32>(); // data size
+    async fn write_flushed_async(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+        use tokio::io::AsyncWriteExt;
+        self.inner.write_all(bytes).await?;
+        self.inner.flush().await?;
+        #[cfg(feature = "tracing")]
+        tracing::trace!(
+            written = bytes.len(),
+            "wrote and flushed protocol response asynchronously"
+        );
+        Ok(())
+    }
+}
 
-        let data_size: usize = std::mem::size_of::<Codec>() + // codec
-        						std::mem::size_of::<u8>() + // command qty1
-              					std::mem::size_of::<u8>() + // command type
-                   				commands
-                       				.iter()
-                           			.fold(0, |acc, e| acc + (std::mem::size_of::<u32>() + e.bytes().len())) + // command size + command string
-                       			std::mem::size_of::<u8>(); // command qty2
+struct ReceiveBuffer {
+    storage: Vec<u8>,
+    head: usize,
+    read_size: usize,
+}
 
-        let buffer_size = header_size + data_size + std::mem::size_of::<u32>(); // CRC 16
-
-        let mut commands_buffer = Vec::with_capacity(buffer_size);
-        commands_buffer.extend([0x00, 0x00, 0x00, 0x00].iter()); // preamble
-        commands_buffer.extend((data_size as u32).to_be_bytes().iter()); // data size
-        commands_buffer.push(Codec::C12.into()); // codec
-        commands_buffer.push(commands.len() as u8); // Qty1
-        commands_buffer.push(0x05u8); // Command type
-        commands_buffer.extend(commands.iter().flat_map(|command| {
-            let mut command_buffer =
-                Vec::with_capacity(std::mem::size_of::<u32>() + command.bytes().len());
-
-            command_buffer.extend((command.bytes().len() as u32).to_be_bytes());
-            command_buffer.extend(command.bytes()); // no call to to_be_bytes needed because it writes single bytes
-
-            command_buffer
-        }));
-        commands_buffer.push(commands.len() as u8); // Qty2
-        commands_buffer.extend(
-            (crate::crc16(&commands_buffer[header_size..]) as u32)
-                .to_be_bytes()
-                .iter(),
-        ); // crc 16
-
-        self.inner.write_all(&commands_buffer).await?;
-        self.inner.flush().await
+impl ReceiveBuffer {
+    fn new(read_size: usize) -> Self {
+        Self {
+            storage: Vec::with_capacity(read_size),
+            head: 0,
+            read_size,
+        }
     }
 
-    /// Writes a single command to the stream.
-    pub async fn write_command_async(&mut self, command: &str) -> io::Result<()> {
-        self.write_commands_async(&[command]).await
+    fn readable(&self) -> &[u8] {
+        &self.storage[self.head..]
+    }
+    fn len(&self) -> usize {
+        self.storage.len() - self.head
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn extend(&mut self, bytes: &[u8]) {
+        if self.head == self.storage.len() {
+            self.storage.clear();
+            self.head = 0;
+        } else if self.head > 0
+            && self.head >= self.storage.capacity() / 2
+            && self.len() <= self.read_size
+        {
+            self.storage.copy_within(self.head.., 0);
+            self.storage.truncate(self.len());
+            self.head = 0;
+        }
+        self.storage.extend_from_slice(bytes);
+    }
+
+    fn consume(&mut self, length: usize) {
+        self.head += length;
+        if self.head == self.storage.len() {
+            self.storage.clear();
+            self.head = 0;
+        }
     }
 }

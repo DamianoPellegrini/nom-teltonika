@@ -1,103 +1,107 @@
-# nom-teltonika, easily parse the teltonika protocol
+# nom-teltonika
 
-[![crates.io version](https://img.shields.io/crates/v/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
-[![crates.io recent downloads](https://img.shields.io/crates/dr/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
-[![docs.rs build](https://img.shields.io/docsrs/nom-teltonika?style=flat-square)](https://docs.rs/nom-teltonika)
+`nom-teltonika` parses and encodes Teltonika TCP and UDP wire protocols. The
+crate name is historical: version 0.2 uses a dependency-free, safe Rust core and
+does not depend on `nom`.
 
-[![build status](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/test_and_release.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/test_and_release.yml)
-[![clippy](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/clippy.yml/badge.svg)](https://github.com/DamianoPellegrini/nom-teltonika/actions/workflows/clippy.yml)
+The library supports AVL Codec 8, Codec 8 Extended, Codec 16, and Codec 12
+command/response packets. It constructs owned frames in one pass from
+caller-owned byte slices, provides explicit acknowledgments, and includes a
+multi-peer UDP socket wrapper.
 
-[![license badge](https://img.shields.io/crates/l/nom-teltonika?style=flat-square)](https://crates.io/crates/nom-teltonika)
-[![repo stars](https://img.shields.io/github/stars/DamianoPellegrini/nom-teltonika?style=social)](https://github.com/DamianoPellegrini/nom-teltonika)
+## Quick start
 
-This package makes use of the [nom crate](https://docs.rs/nom) to parse the binary packets.
-
-## Capabilities
-
-- Parsing:
-  - Codec 8, 8-Extended and 16 (aka TCP/UDP Protocol).
-  - Codec 12 command responses.
-  - It **DOES NOT** currently parse Codec 13 and 14, it **MAY** does so in the future.
-
-- It fails parsing if any of the following checks fail:
-  - Preamble **MUST BE** 0x00000000
-  - CRCs **DOES NOT** match
-  - Record Counts **DOES NOT** match
-  - UDP Un-usable byte **MUST BE** 0x01
-  - Command response type byte **MUST BE** 0x06
-
-- It allows for sending commands to a device using Codec 12 **ONLY**.
-
-## Features
-
-A TeltonikaStream wrapper is provided to easily parse the incoming packets.
-
-The following opt-in features are available:
-
-- serde (ser/deser-ialization using the [serde crate](https://docs.rs/serde))
-- tokio (async framework using the [tokio crate](https://docs.rs/tokio))
+Add the dependency without default features:
 
 ```toml
 [dependencies]
-nom-teltonika = { version = "*", features = ["serde", "tokio"] }
+nom-teltonika = "0.2"
 ```
 
-## Examples
-
-### Imei parsing
+Parse one TCP frame. `consumed` lets you retain a concatenated or partial next
+frame in your own buffer.
 
 ```rust
-let imei_buffer = [0x00, 0x0F, 0x33, 0x35,
-                   0x36, 0x33, 0x30, 0x37,
-                   0x30, 0x34, 0x32, 0x34,
-                   0x34, 0x31, 0x30, 0x31,
-                   0x33
-                   ];
+use nom_teltonika::{AvlCodec, Frame, parse_tcp_frame};
 
-let (rest, imei) = nom_teltonika::parser::imei(&imei_buffer).unwrap();
+let bytes = hex::decode(
+    "000000000000002808010000016B40D9AD80010000000000000000000000000000000103021503010101425E100000010000F22A",
+).unwrap();
+let parsed = parse_tcp_frame(&bytes).unwrap();
 
-assert_eq!(rest, &[]);
-assert_eq!(imei, String::from("356307042441013"));
+let Frame::Avl(packet) = parsed.value else {
+    panic!("expected AVL data");
+};
+assert_eq!(packet.codec(), AvlCodec::Codec8);
+assert_eq!(packet.records().len(), 1);
+assert_eq!(parsed.consumed, bytes.len());
 ```
 
-### Tcp Frame parsing
+Parse the TCP IMEI handshake independently:
 
 ```rust
-let buffer = [0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x36,
-              0x08, 0x01, 0x00, 0x00,
-              0x01, 0x6B, 0x40, 0xD8,
-              0xEA, 0x30, 0x01, 0x00,
-              0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x01, 0x05,
-              0x02, 0x15, 0x03, 0x01,
-              0x01, 0x01, 0x42, 0x5E,
-              0x0F, 0x01, 0xF1, 0x00,
-              0x00, 0x60, 0x1A, 0x01,
-              0x4E, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x00,
-              0x00, 0x01, 0x00, 0x00,
-              0xC7, 0xCF
-              ];
+use nom_teltonika::parse_imei;
 
-let (rest, frame) = nom_teltonika::parser::tcp_frame(&buffer).unwrap();
-
-assert_eq!(rest, &[]);
-println!("{frame:#?}");
+let handshake = b"\x00\x0f356307042441013";
+let parsed = parse_imei(handshake).unwrap();
+assert_eq!(parsed.value.as_str(), "356307042441013");
+assert_eq!(parsed.consumed, handshake.len());
 ```
 
-#### Or by using the TeltonikaStream wrapper
+Use `TeltonikaStream` when the result must own all variable data and outlive the
+receive buffer:
 
 ```rust
-let mut file = std::fs::File::open("tests/test.bin").unwrap();
+use std::io::Cursor;
+use nom_teltonika::{Frame, TeltonikaStream, encode_codec12_command};
 
-let mut stream = nom_teltonika::TeltonikaStream::new(file);
-
-let frame = stream.read_frame().unwrap();
-
-println!("{frame:#?}");
+let bytes = encode_codec12_command(b"getinfo");
+let mut stream = TeltonikaStream::new(Cursor::new(bytes));
+let Frame::Codec12(packet) = stream.read_frame().unwrap() else {
+    panic!("expected Codec 12");
+};
+assert_eq!(packet.message().payload_as_str(0).unwrap().unwrap(), "getinfo");
 ```
 
-*Further examples can be found in the examples folder.*
+## Error policy
+
+`ParseError::Incomplete` never consumes input. `ParseError::Rejected` identifies
+a complete, safely delimited invalid frame and reports how many bytes the caller
+may consume. `ParseError::Fatal` reports framing that cannot be safely trusted,
+including invalid preambles, arithmetic overflow, and declared lengths above the
+configured limit.
+
+The stream consumes a rejected frame before returning its error. It returns
+`StreamError::Closed` for EOF at a frame boundary and `StreamError::Truncated`
+for EOF with partial buffered data. No read path sends an automatic ACK.
+
+## Encoders
+
+The crate root exports fixed-size encoders for IMEI approval, TCP AVL ACK/NACK,
+and correlated UDP ACK, plus Codec 12 single/batch encoders. Variable encoders
+accept bytes, so non-UTF-8 commands are preserved. Stream writes flush
+automatically.
+
+Codec 12 commands require an open GPRS session. Keep application connection
+policy, retries, and ACK timing outside this crate.
+
+## Optional features
+
+No feature is enabled by default.
+
+- `tokio`: async stream methods and `tokio::net::UdpSocket` integration.
+- `serde`: serialization of wire models plus validated deserialization for
+  `Imei` and `Limits`.
+- `chrono`: checked conversion from `AvlTimestamp` to `DateTime<Utc>`.
+- `tracing`: privacy-safe `trace` and `debug` events containing framing metadata
+  only. Events omit IMEIs, coordinates, commands, and payloads.
+
+See [the 0.2 migration guide](docs/migration-0.2.md) for the complete breaking
+rename and behavior changes.
+
+## Protocol authority
+
+Wire behavior and minimized test fixtures follow Teltonika's official
+[Data Sending Protocols](https://wiki.teltonika-gps.com/view/Teltonika_Data_Sending_Protocols)
+documentation. AVL IO meanings remain model- and firmware-specific; consult the
+device's parameter ID documentation rather than assuming one global mapping.

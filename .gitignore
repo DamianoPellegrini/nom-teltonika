@@ -3,7 +3,6 @@
 
 # Test files
 tests/*.bin
-!tests/test.bin
 tests/*.json
 
 # Build artifacts
