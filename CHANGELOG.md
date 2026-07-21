@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.6...v0.2.0) - 2026-07-21
+
+### Added
+
+- add TCP server examples
+
+### Other
+
+- restructure README sections
+- [**breaking**] specialize TCP stream naming and buffering
+- slice cursor instead of manual operations
+- [**breaking**] rename decoding API and specialize errors
+- private stream config fields
+- more concise readme
+- remove obsolete project references
+- cleaner parser, documentation
+- migration guide for 0.2
+- [**breaking**] redesign parser and stream API
+
 ## [0.1.6](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.5...v0.1.6) (2024-11-25)
 
 
