@@ -77,7 +77,7 @@ exactly one complete datagram and returns `UdpDatagram` directly.
 Read the IMEI handshake before passing the connection to `TeltonikaTcpStream`.
 The stream never acknowledges packets automatically.
 
-```no_run
+```rust no_run
 use std::{io::Read, net::TcpListener};
 use nom_teltonika::{
     decoder::decode_imei,
@@ -108,7 +108,7 @@ if accepted {
         _ => {}
     }
 }
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok(())
 ```
 
 Keep the connection open to send Codec 12 commands.
@@ -118,7 +118,7 @@ Do not read directly from the underlying transport after wrapping it because the
 
 Send each acknowledgment to the source address and reuse the packet identifiers returned by the device.
 
-```no_run
+```rust no_run
 use std::net::UdpSocket;
 use nom_teltonika::udp::TeltonikaUdpSocket;
 
