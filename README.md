@@ -108,7 +108,7 @@ if accepted {
         _ => {}
     }
 }
-# Ok(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Keep the connection open to send Codec 12 commands.

@@ -39,6 +39,7 @@ tracing = { version = "0.1.44", default-features = false, optional = true, featu
 [dev-dependencies]
 criterion = "0.5.1"
 hex = "0.4.3"
+proptest = "1"
 serde_json = "1.0.102"
 tokio = { version = "1.29.1", features = ["io-util", "net", "macros", "rt"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = ["fmt"] }
