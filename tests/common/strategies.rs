@@ -1,12 +1,15 @@
 #![allow(dead_code)]
 
-use nom_teltonika::{encoder::encode_codec12_commands, protocol::AvlCodec};
+use nom_teltonika::{
+    encoder::encode_gprs_frame,
+    protocol::{AvlCodec, GprsMessageType},
+};
 use proptest::prelude::*;
 use proptest::{collection, sample};
 
 use super::tcp_frame_from_data;
 
-/// Random-but-consistent field values for one AVL record, before wire encoding.
+/// Random-but-consistent field values for one AVL record, before encoding.
 #[derive(Debug, Clone)]
 pub struct AvlRecordRecipe {
     pub timestamp: u64,
@@ -83,8 +86,7 @@ fn push_id(out: &mut Vec<u8>, codec: AvlCodec, id: u16) {
     }
 }
 
-/// Encodes one record exactly as `src/decoder.rs::decode_record` expects it,
-/// for the given codec's field widths.
+/// Encodes one record with the given codec's field widths.
 fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&recipe.timestamp.to_be_bytes());
@@ -106,16 +108,15 @@ fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
         out.push(recipe.generation_type);
     }
 
-    let extended_count = if codec == AvlCodec::Codec8Extended {
-        recipe.io_bytes.len()
-    } else {
-        0
-    };
-    let total = (recipe.io_u8.len()
-        + recipe.io_u16.len()
-        + recipe.io_u32.len()
-        + recipe.io_u64.len()
-        + extended_count) as u16;
+    // "N = N1 + N2 + N4 + N8" (https://wiki.teltonika-gps.com/view/Codec,
+    // "Codec 8 Extended > IO Element", accessed 2026-09-24), plus NX in
+    // Codec 8 Extended, as devices send it.
+    let mut total =
+        recipe.io_u8.len() + recipe.io_u16.len() + recipe.io_u32.len() + recipe.io_u64.len();
+    if codec == AvlCodec::Codec8Extended {
+        total += recipe.io_bytes.len();
+    }
+    let total = total as u16;
     push_count(&mut out, codec, total);
 
     push_count(&mut out, codec, recipe.io_u8.len() as u16);
@@ -153,7 +154,7 @@ fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
 
 /// Assembles a complete, CRC-correct TCP frame from already-generated records.
 pub fn build_avl_frame(codec: AvlCodec, records: &[AvlRecordRecipe]) -> Vec<u8> {
-    let mut data = vec![codec.id(), records.len() as u8];
+    let mut data = vec![u8::from(codec), records.len() as u8];
     for record in records {
         data.extend_from_slice(&encode_record(codec, record));
     }
@@ -175,18 +176,19 @@ pub fn avl_frame_with_corruption(codec: AvlCodec) -> impl Strategy<Value = (Vec<
     })
 }
 
-/// A structurally valid Codec 12 command frame, alongside the message count it encodes.
-pub fn codec12_frame() -> impl Strategy<Value = (Vec<u8>, usize)> {
+/// A structurally valid Codec 12 command frame, alongside the commands it encodes.
+pub fn codec12_frame() -> impl Strategy<Value = (Vec<u8>, Vec<Vec<u8>>)> {
     collection::vec(collection::vec(any::<u8>(), 0..=16), 1..=4).prop_map(|commands| {
         let refs: Vec<&[u8]> = commands.iter().map(Vec::as_slice).collect();
-        let bytes = encode_codec12_commands(refs).expect("1..=4 small commands always encode");
-        (bytes, commands.len())
+        let bytes = encode_gprs_frame(GprsMessageType::Command, &refs)
+            .expect("1..=4 small commands always encode");
+        (bytes, commands)
     })
 }
 
 /// A valid Codec 12 frame plus a random byte offset and replacement byte.
 pub fn codec12_frame_with_corruption() -> impl Strategy<Value = (Vec<u8>, usize, u8)> {
-    codec12_frame().prop_flat_map(|(bytes, _count)| {
+    codec12_frame().prop_flat_map(|(bytes, _commands)| {
         let len = bytes.len();
         (Just(bytes), 0..len, any::<u8>())
     })

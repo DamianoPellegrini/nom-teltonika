@@ -10,6 +10,3 @@ tests/*.json
 
 # Cargo artifacts
 Cargo.lock
-
-# Superpowers SDD workspace
-.superpowers/
