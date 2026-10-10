@@ -1,0 +1,18 @@
+[package]
+name = "teltonika-simulator"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Simulated Teltonika devices for testing, load testing, and benchmarking nom-teltonika"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "teltonika-simulator"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+fastrand = "2"
+nom-teltonika = { path = "../..", features = ["tokio"] }
+tokio = { version = "1.29.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

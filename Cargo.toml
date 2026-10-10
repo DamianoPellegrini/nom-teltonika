@@ -22,6 +22,9 @@ include = [
     "/LICENSE",
 ]
 
+[workspace]
+members = ["tools/simulator"]
+
 [features]
 default = ["std"]
 alloc = ["serde?/alloc", "serde_bytes?/alloc"]
