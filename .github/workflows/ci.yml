@@ -37,6 +37,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --tests --all-features --verbose
+      - run: cargo test --tests --no-default-features --verbose
+      - run: cargo test --tests --no-default-features --features alloc --verbose
       - run: cargo test --doc --all-features --verbose
       - run: cargo test -p teltonika-simulator --verbose
 
