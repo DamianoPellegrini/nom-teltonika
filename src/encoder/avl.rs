@@ -939,8 +939,11 @@ mod tests {
         // Codec 16 has no 1280-byte limit: 255 records of 32 bytes decode
         // back.
         let periodical = record.with_generation_type(GenerationType::Periodical);
-        let long = encode_avl_frame(AvlCodec::Codec16, &[periodical; 255]).unwrap();
-        assert_eq!(long.len(), 12 + 3 + 255 * 32);
+        let mut long = [0; 12 + 3 + 255 * 32];
+        assert_eq!(
+            encode_avl_frame_into(AvlCodec::Codec16, &[periodical; 255], &mut long),
+            Ok(long.len())
+        );
         let FrameView::Avl(packet) = take_frame(&mut &long[..]).unwrap() else {
             panic!("expected AVL data");
         };

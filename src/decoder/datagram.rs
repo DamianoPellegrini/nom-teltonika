@@ -201,6 +201,11 @@ mod tests {
         assert_eq!(datagram.packet_id(), 0xcafe);
         assert_eq!(datagram.avl_packet_id(), 0x05);
         assert_eq!(datagram.imei().as_str(), "352093086403655");
+        // The same section: the server responds `0005CAFE010501`.
+        assert_eq!(
+            crate::encoder::encode_udp_ack(datagram.ids(), 1),
+            [0x00, 0x05, 0xca, 0xfe, 0x01, 0x05, 0x01]
+        );
 
         let record = datagram.packet().records().next().unwrap();
         assert_eq!(u64::from(record.timestamp()), 0x0000_016b_4f81_5b30);
@@ -218,6 +223,35 @@ mod tests {
                 (IoId::from(0x42), IoValueView::U16(0x5dbc)),
             ]
         );
+    }
+
+    #[test]
+    fn decodes_every_avl_codec() {
+        // The wiki has a UDP example for Codec 8 only. These datagrams are
+        // its header followed by the data field of each TCP example, which
+        // is what "Codec8 protocol sending over UDP" says a datagram holds.
+        use crate::fixtures::{CODEC8, CODEC8_EXTENDED, CODEC16, bytes, data_field};
+        use crate::protocol::FrameView;
+
+        let example = hex::decode(EXAMPLE).unwrap();
+        for fixture in [CODEC8, CODEC8_EXTENDED, CODEC16] {
+            let frame = bytes(fixture);
+            let Ok(FrameView::Avl(sent)) = crate::decoder::take_frame(&mut &frame[..]) else {
+                panic!("expected AVL data");
+            };
+            // Length, then packet ID to IMEI, then the data field.
+            let data = data_field(&frame);
+            let mut bytes = u16::try_from(21 + data.len())
+                .unwrap()
+                .to_be_bytes()
+                .to_vec();
+            bytes.extend_from_slice(&example[2..23]);
+            bytes.extend_from_slice(data);
+
+            let datagram = take_datagram(&mut &bytes[..]).unwrap();
+            assert_eq!(datagram.imei().as_str(), "352093086403655");
+            assert_eq!(datagram.packet(), sent);
+        }
     }
 
     /// Decodes a datagram expected to be invalid, checking that `input` is
@@ -275,6 +309,11 @@ mod tests {
             DatagramError::ImeiNotAscii(ImeiError { index: 0 })
         );
 
+        // A shorter IMEI than sent: its 15th digit is read as the codec ID.
+        let mut bytes = hex::decode(EXAMPLE).unwrap();
+        bytes[7] = 14;
+        assert_eq!(error(&bytes), DatagramError::UnsupportedCodec(b'5'));
+
         // A longer IMEI than the datagram holds.
         let mut bytes = hex::decode(EXAMPLE).unwrap();
         bytes[6..8].copy_from_slice(&100u16.to_be_bytes());
@@ -304,5 +343,13 @@ mod tests {
         let mut bytes = hex::decode(EXAMPLE).unwrap();
         bytes[4] = 0x7f;
         assert!(take_datagram(&mut &bytes[..]).is_ok());
+    }
+
+    #[test]
+    fn accepts_an_imei_of_any_ascii_text() {
+        let mut bytes = hex::decode(EXAMPLE).unwrap();
+        bytes[8] = b'x';
+        let datagram = take_datagram(&mut &bytes[..]).unwrap();
+        assert_eq!(datagram.imei().as_str(), "x52093086403655");
     }
 }

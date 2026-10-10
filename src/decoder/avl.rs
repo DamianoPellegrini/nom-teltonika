@@ -233,7 +233,10 @@ mod tests {
 
     use crate::decoder::take_frame;
     use crate::decoder::tests::frame;
-    use crate::fixtures::{CODEC8, CODEC8_EXTENDED, CODEC16, bytes, data_field};
+    use crate::fixtures::{
+        CODEC8, CODEC8_EXTENDED, CODEC8_SINGLE_RECORD_ALT, CODEC8_TWO_RECORDS, CODEC16, bytes,
+        data_field,
+    };
 
     use super::AvlPacketError;
     use crate::protocol::{
@@ -285,6 +288,44 @@ mod tests {
                 io(0x4e, IoValueView::U64(0)),
             ]
         );
+    }
+
+    /// "Codec 8 > Examples > 2nd example" and "3rd example" from
+    /// https://wiki.teltonika-gps.com/view/Codec (accessed 2026-10-10): one
+    /// record with three IO elements, then two records with one each.
+    #[test]
+    fn decodes_the_other_wiki_codec8_examples() {
+        let second = [(
+            0x0000_016b_40d9_ad80,
+            vec![
+                io(0x15, IoValueView::U8(0x03)),
+                io(0x01, IoValueView::U8(0x01)),
+                io(0x42, IoValueView::U16(0x5e10)),
+            ],
+        )];
+        let third = [
+            (0x0000_016b_40d5_7b48, vec![io(0x01, IoValueView::U8(0x00))]),
+            (0x0000_016b_40d5_c198, vec![io(0x01, IoValueView::U8(0x01))]),
+        ];
+        for (fixture, expected) in [
+            (CODEC8_SINGLE_RECORD_ALT, &second[..]),
+            (CODEC8_TWO_RECORDS, &third[..]),
+        ] {
+            let bytes = bytes(fixture);
+            let packet = avl_packet(&bytes);
+            assert_eq!(packet.codec(), AvlCodec::Codec8);
+            assert_eq!(packet.records().len(), expected.len());
+            for (record, (timestamp, elements)) in packet.records().zip(expected) {
+                assert_eq!(u64::from(record.timestamp()), *timestamp);
+                assert_eq!(record.priority(), Priority::High);
+                assert_eq!(record.event_io_id(), Some(IoId::from(0x01)));
+                let decoded: Vec<_> = record
+                    .io_elements()
+                    .map(|element| (element.id(), element.value()))
+                    .collect();
+                assert_eq!(&decoded, elements);
+            }
+        }
     }
 
     /// "Codec 8 Extended > Example" from
@@ -357,18 +398,7 @@ mod tests {
 
     #[test]
     fn decodes_variable_length_io_elements() {
-        // One Codec 8 Extended record with only NX elements: 0x0101 => "ab"
-        // and 0x0102 => "". N counts NX too, so it is 2.
-        let mut data = hex::decode("8e01").unwrap();
-        data.extend_from_slice(&[0; 8 + 1 + 15]); // timestamp, priority, GPS
-        data.extend_from_slice(
-            &hex::decode(
-                "0000 0002 0000 0000 0000 0000 0002 0101 0002 6162 0102 0000".replace(' ', ""),
-            )
-            .unwrap(),
-        );
-        data.push(0x01);
-        let frame = frame(&data);
+        let frame = frame(&variable_io_data());
 
         let packet = avl_packet(&frame);
         let record = packet.records().next().unwrap();
@@ -408,10 +438,38 @@ mod tests {
         );
     }
 
+    /// Data field of one Codec 8 Extended record with only NX elements:
+    /// 0x0101 => "ab" and 0x0102 => "". N counts NX too, so it is 2.
+    fn variable_io_data() -> Vec<u8> {
+        let mut data = hex::decode("8e01").unwrap();
+        data.extend_from_slice(&[0; 8 + 1 + 15]); // timestamp, priority, GPS
+        data.extend_from_slice(
+            &hex::decode(
+                "0000 0002 0000 0000 0000 0000 0002 0101 0002 6162 0102 0000".replace(' ', ""),
+            )
+            .unwrap(),
+        );
+        data.push(0x01);
+        data
+    }
+
     /// Data field of "Codec 8 > Examples > 1st example": codec ID at 0, record
-    /// count at 1, priority at 10, "N of Total IO" at 27, second count at 53.
+    /// count at 1, priority at 10, longitude at 11, latitude at 15, "N of
+    /// Total IO" at 27, second count at 53.
     fn codec8_data() -> Vec<u8> {
         data_field(&bytes(CODEC8)).to_vec()
+    }
+
+    #[test]
+    fn keeps_coordinates_out_of_range_as_sent() {
+        let mut data = codec8_data();
+        data[11..15].copy_from_slice(&i32::MAX.to_be_bytes());
+        data[15..19].copy_from_slice(&i32::MIN.to_be_bytes());
+        let packet = super::validate_avl_data(AvlCodec::Codec8, &data).unwrap();
+        let gps = packet.records().next().unwrap().gps();
+        assert_eq!(gps.longitude_raw, i32::MAX);
+        assert_eq!(gps.latitude_raw, i32::MIN);
+        assert!(!gps.is_position_valid());
     }
 
     fn error(codec: AvlCodec, data: &[u8]) -> AvlPacketError {
@@ -420,13 +478,24 @@ mod tests {
 
     #[test]
     fn rejects_data_that_ends_early() {
-        let data = codec8_data();
-        for end in 1..data.len() {
-            assert_eq!(
-                error(AvlCodec::Codec8, &data[..end]),
-                AvlPacketError::Truncated,
-                "truncated at {end}"
-            );
+        // Every codec reads its IDs and counts at its own widths, and only
+        // Codec 8 Extended has variable-length elements.
+        for (codec, data) in [
+            (AvlCodec::Codec8, codec8_data()),
+            (
+                AvlCodec::Codec8Extended,
+                data_field(&bytes(CODEC8_EXTENDED)).to_vec(),
+            ),
+            (AvlCodec::Codec8Extended, variable_io_data()),
+            (AvlCodec::Codec16, data_field(&bytes(CODEC16)).to_vec()),
+        ] {
+            for end in 1..data.len() {
+                assert_eq!(
+                    error(codec, &data[..end]),
+                    AvlPacketError::Truncated,
+                    "{codec:?} truncated at {end}"
+                );
+            }
         }
     }
 
@@ -462,37 +531,55 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_invalid_priority() {
+    fn rejects_every_priority_but_the_three_defined() {
         let mut data = codec8_data();
-        data[10] = 3;
-        assert_eq!(
-            error(AvlCodec::Codec8, &data),
-            AvlPacketError::InvalidPriority(3)
-        );
+        for value in 0..=u8::MAX {
+            data[10] = value;
+            let decoded = super::validate_avl_data(AvlCodec::Codec8, &data)
+                .map(|packet| packet.records().next().unwrap().priority());
+            let expected = Priority::try_from(value).map_err(AvlPacketError::InvalidPriority);
+            assert_eq!(decoded, expected);
+            assert_eq!(decoded.is_ok(), value <= 2, "priority {value}");
+        }
     }
 
     #[test]
-    fn rejects_an_invalid_generation_type() {
+    fn rejects_every_generation_type_but_the_eight_defined() {
         // "Codec 16 > Example" data field; the generation type is at 28.
         let mut data = data_field(&bytes(CODEC16)).to_vec();
-        data[28] = 8;
-        assert_eq!(
-            error(AvlCodec::Codec16, &data),
-            AvlPacketError::InvalidGenerationType(8)
-        );
+        for value in 0..=u8::MAX {
+            data[28] = value;
+            let decoded = super::validate_avl_data(AvlCodec::Codec16, &data)
+                .map(|packet| packet.records().next().unwrap().generation_type());
+            let expected = GenerationType::try_from(value)
+                .map(Some)
+                .map_err(AvlPacketError::InvalidGenerationType);
+            assert_eq!(decoded, expected);
+            assert_eq!(decoded.is_ok(), value <= 7, "generation type {value}");
+        }
     }
 
     #[test]
     fn rejects_a_total_io_count_that_differs_from_the_groups() {
-        let mut data = codec8_data();
-        data[27] = 6;
-        assert_eq!(
-            error(AvlCodec::Codec8, &data),
-            AvlPacketError::IoCountMismatch {
-                declared: 6,
-                counted: 5
-            }
-        );
+        // The low byte of "N of Total IO" in each wiki example: one byte at
+        // 27 in Codec 8, two at 28 in Codec 8 Extended, and one at 29, after
+        // the generation type, in Codec 16.
+        for (codec, fixture, index, counted) in [
+            (AvlCodec::Codec8, CODEC8, 27, 5),
+            (AvlCodec::Codec8Extended, CODEC8_EXTENDED, 29, 5),
+            (AvlCodec::Codec16, CODEC16, 29, 4),
+        ] {
+            let mut data = data_field(&bytes(fixture)).to_vec();
+            assert_eq!(data[index], counted);
+            data[index] += 1;
+            assert_eq!(
+                error(codec, &data),
+                AvlPacketError::IoCountMismatch {
+                    declared: u16::from(counted) + 1,
+                    counted: u32::from(counted),
+                }
+            );
+        }
     }
 
     #[test]

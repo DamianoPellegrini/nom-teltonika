@@ -253,11 +253,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_unknown_message_type() {
-        assert_eq!(
-            error(&[0x0c, 0x01, 0x11, 0x00, 0x00, 0x00, 0x00, 0x01]),
-            GprsPacketError::InvalidMessageType(0x11)
-        );
+    fn rejects_every_message_type_but_command_and_response() {
+        // The wiki allows only 0x05 and 0x06: "Codec 12 > General Codec12
+        // message structure".
+        for value in 0..=u8::MAX {
+            let data = [0x0c, 0x01, value, 0x00, 0x00, 0x00, 0x00, 0x01];
+            let decoded = super::validate_gprs_data(GprsCodec::Codec12, &data)
+                .map(|packet| packet.messages().next().unwrap().kind());
+            let expected =
+                GprsMessageType::try_from(value).map_err(GprsPacketError::InvalidMessageType);
+            assert_eq!(decoded, expected);
+            assert_eq!(
+                decoded.is_ok(),
+                matches!(value, 0x05 | 0x06),
+                "{value:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_as_many_messages_as_the_quantity_can_declare() {
+        let mut data = std::vec![0x0c, u8::MAX];
+        for _ in 0..u8::MAX {
+            data.extend_from_slice(&[0x05, 0, 0, 0, 0]);
+        }
+        data.push(u8::MAX);
+        let packet = super::validate_gprs_data(GprsCodec::Codec12, &data).unwrap();
+        assert_eq!(packet.messages().len(), 255);
     }
 
     #[test]

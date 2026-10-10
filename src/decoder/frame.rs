@@ -564,17 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn skips_an_unsupported_codec_without_checking_its_crc() {
-        let mut bytes = frame(&[0x0d, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x01]);
-        let last = bytes.len() - 1;
-        bytes[last] ^= 1;
-        assert_eq!(
-            take_frame(&mut &bytes[..]).unwrap_err(),
-            invalid(bytes.len(), FrameError::UnsupportedCodec(0x0d))
-        );
-    }
-
-    #[test]
     fn rejects_codec8_frames_over_the_size_limit_without_waiting() {
         for codec_id in [0x08, 0x8e] {
             let data_len =
@@ -649,10 +638,13 @@ mod tests {
     }
 
     #[test]
-    fn skips_a_frame_with_an_unsupported_codec() {
+    fn skips_a_frame_with_an_unsupported_codec_without_checking_its_crc() {
         // A Codec 13 frame (Data Sending Protocols, "Codec 13"): delimited by
-        // its header, so it can be skipped whole.
-        let bytes = frame(&[0x0d, 0x01, 0x06, 0x00, 0x00, 0x00, 0x04, 1, 2, 3, 4, 0x01]);
+        // its header, so it can be skipped whole. Its CRC is wrong, and not
+        // the reason given.
+        let mut bytes = frame(&[0x0d, 0x01, 0x06, 0x00, 0x00, 0x00, 0x04, 1, 2, 3, 4, 0x01]);
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
         let mut input = &bytes[..];
         assert_eq!(
             take_frame(&mut input).unwrap_err(),

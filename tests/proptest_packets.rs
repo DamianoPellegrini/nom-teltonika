@@ -3,15 +3,19 @@
 mod common;
 
 use common::strategies::{
-    AvlRecordRecipe, avl_frame, avl_frame_with_corruption, codec12_frame,
-    codec12_frame_with_corruption,
+    AvlRecordRecipe, DatagramRecipe, avl_packet, build_avl_data, build_datagram, build_gprs_frame,
+    datagram_recipe, frame, gprs_messages,
 };
+use common::tcp_frame_from_data;
 use nom_teltonika::{
-    decoder::{DecodeFrameError, DecodeImeiError, take_datagram, take_frame, take_imei},
-    encoder::{AvlRecordFields, encode_avl_frame},
+    decoder::{
+        DecodeFrameError, DecodeImeiError, FrameError, HeaderError, take_datagram, take_frame,
+        take_imei,
+    },
+    encoder::{AvlRecordFields, DatagramHeaderFields, encode_avl_datagram, encode_avl_frame},
     protocol::{
-        AvlCodec, AvlRecord, AvlTimestamp, Frame, GenerationType, GpsElement, IoId, IoValue,
-        Priority,
+        AvlCodec, AvlPacket, AvlRecord, AvlTimestamp, Codec, Frame, GenerationType, GpsElement,
+        ImeiView, IoId, IoValue, Priority,
     },
 };
 use proptest::prelude::*;
@@ -98,56 +102,51 @@ fn assert_record_matches(record: &AvlRecord, recipe: &AvlRecordRecipe, codec: Av
     assert_eq!(actual, expected);
 }
 
+/// Asserts `packet` holds exactly the records of `recipes`, in order.
+fn assert_packet_matches(packet: &AvlPacket, recipes: &[AvlRecordRecipe], codec: AvlCodec) {
+    assert_eq!(packet.codec(), codec);
+    assert_eq!(packet.records().len(), recipes.len());
+    for (record, recipe) in packet.records().iter().zip(recipes) {
+        assert_record_matches(record, recipe, codec);
+    }
+}
+
+// The strategies' encoders are written independently from the library's,
+// from the wiki layouts. The codec is drawn with each case: a property that
+// holds for one codec's field widths must hold for all three.
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
-
     #[test]
-    fn codec8_frame_round_trips((bytes, recipes) in avl_frame(AvlCodec::Codec8)) {
+    fn avl_frames_decode_to_their_recipe((codec, recipes) in avl_packet()) {
+        let bytes = tcp_frame_from_data(&build_avl_data(codec, &recipes));
         let mut rest = &bytes[..];
         let decoded = take_frame(&mut rest).expect("frame built by the strategy must be valid");
         prop_assert!(rest.is_empty());
         let Frame::Avl(packet) = Frame::from(decoded) else {
             panic!("expected AVL frame")
         };
-        prop_assert_eq!(packet.codec(), AvlCodec::Codec8);
-        prop_assert_eq!(packet.records().len(), recipes.len());
-        for (record, recipe) in packet.records().iter().zip(&recipes) {
-            assert_record_matches(record, recipe, AvlCodec::Codec8);
-        }
+        assert_packet_matches(&packet, &recipes, codec);
     }
 
     #[test]
-    fn codec8_extended_frame_round_trips((bytes, recipes) in avl_frame(AvlCodec::Codec8Extended)) {
+    fn datagrams_decode_to_their_recipe(
+        (codec, recipes) in avl_packet(),
+        header in datagram_recipe(),
+    ) {
+        let bytes = build_datagram(&header, &build_avl_data(codec, &recipes));
         let mut rest = &bytes[..];
-        let decoded = take_frame(&mut rest).expect("frame built by the strategy must be valid");
+        let datagram = take_datagram(&mut rest)
+            .expect("datagram built by the strategy must be valid")
+            .evaluate();
         prop_assert!(rest.is_empty());
-        let Frame::Avl(packet) = Frame::from(decoded) else {
-            panic!("expected AVL frame")
-        };
-        prop_assert_eq!(packet.codec(), AvlCodec::Codec8Extended);
-        prop_assert_eq!(packet.records().len(), recipes.len());
-        for (record, recipe) in packet.records().iter().zip(&recipes) {
-            assert_record_matches(record, recipe, AvlCodec::Codec8Extended);
-        }
+        prop_assert_eq!(datagram.packet_id(), header.packet_id);
+        prop_assert_eq!(datagram.avl_packet_id(), header.avl_packet_id);
+        prop_assert_eq!(datagram.imei().as_str(), &header.imei);
+        assert_packet_matches(datagram.packet(), &recipes, codec);
     }
 
     #[test]
-    fn codec16_frame_round_trips((bytes, recipes) in avl_frame(AvlCodec::Codec16)) {
-        let mut rest = &bytes[..];
-        let decoded = take_frame(&mut rest).expect("frame built by the strategy must be valid");
-        prop_assert!(rest.is_empty());
-        let Frame::Avl(packet) = Frame::from(decoded) else {
-            panic!("expected AVL frame")
-        };
-        prop_assert_eq!(packet.codec(), AvlCodec::Codec16);
-        prop_assert_eq!(packet.records().len(), recipes.len());
-        for (record, recipe) in packet.records().iter().zip(&recipes) {
-            assert_record_matches(record, recipe, AvlCodec::Codec16);
-        }
-    }
-
-    #[test]
-    fn codec12_frame_round_trips((bytes, expected_messages) in codec12_frame()) {
+    fn gprs_frames_decode_to_their_messages(messages in gprs_messages()) {
+        let bytes = build_gprs_frame(&messages);
         let mut rest = &bytes[..];
         let decoded = take_frame(&mut rest).expect("frame built by the strategy must be valid");
         prop_assert!(rest.is_empty());
@@ -155,16 +154,72 @@ proptest! {
             panic!("expected Codec 12 frame")
         };
         let payloads: Vec<&[u8]> = packet.messages().iter().map(|message| message.payload()).collect();
-        let expected: Vec<&[u8]> = expected_messages.iter().map(Vec::as_slice).collect();
-        prop_assert_eq!(payloads, expected);
+        prop_assert_eq!(payloads, messages);
     }
 
-    // The following four properties make no assertion on the outcome:
-    // arbitrary single-byte corruption at a random offset has no single
-    // expected result. The frame may still decode, or fail with any error.
-    // They check that decoding never panics and that the cursor contract
-    // holds: untouched unless the frame was delimited.
+    #[test]
+    fn library_encoders_match_the_reference(
+        (codec, recipes) in avl_packet(),
+        header in datagram_recipe(),
+    ) {
+        let data = build_avl_data(codec, &recipes);
+        let (frame, datagram) = encode_with_library(codec, &recipes, &header);
+        prop_assert_eq!(frame, tcp_frame_from_data(&data));
+        prop_assert_eq!(datagram, build_datagram(&header, &data));
+    }
 
+    // CRC-16 detects every change confined to 16 bits, so one changed byte
+    // has one expected outcome, set by the field it is in. Only a changed
+    // length has several, since it moves the end of the frame.
+    #[test]
+    fn a_changed_byte_is_reported_by_the_field_it_is_in(
+        mut bytes in frame(),
+        index in any::<prop::sample::Index>(),
+        change in 1..=u8::MAX,
+    ) {
+        let index = index.index(bytes.len());
+        bytes[index] ^= change;
+        let mut rest = &bytes[..];
+        let result = take_frame(&mut rest);
+        let consumed = bytes.len() - rest.len();
+        match index {
+            0..4 => {
+                let found = [bytes[0], bytes[1], bytes[2], bytes[3]];
+                prop_assert_eq!(
+                    result.unwrap_err(),
+                    DecodeFrameError::InvalidHeader(HeaderError::InvalidPreamble { found })
+                );
+                prop_assert_eq!(consumed, 0);
+            }
+            4..8 => match result {
+                // Delimited by the changed length, wherever that ends.
+                Ok(_) => prop_assert!(consumed > 0),
+                Err(DecodeFrameError::InvalidFrame { len, .. }) => prop_assert_eq!(consumed, len),
+                Err(DecodeFrameError::Incomplete { .. } | DecodeFrameError::InvalidHeader(_)) => {
+                    prop_assert_eq!(consumed, 0);
+                }
+            },
+            _ => {
+                let Err(DecodeFrameError::InvalidFrame { len, reason }) = result else {
+                    panic!("expected an invalid frame, got {result:?}")
+                };
+                prop_assert_eq!(len, bytes.len());
+                prop_assert_eq!(consumed, len);
+                // A codec ID that is no longer supported is told before the
+                // CRC is computed.
+                match Codec::try_from(bytes[8]) {
+                    Err(codec_id) => prop_assert_eq!(reason, FrameError::UnsupportedCodec(codec_id)),
+                    Ok(_) => prop_assert!(
+                        matches!(reason, FrameError::CrcMismatch { .. }),
+                        "{:?}", reason
+                    ),
+                }
+            }
+        }
+    }
+
+    // No outcome is expected of arbitrary bytes: decoding must not panic,
+    // and must leave the cursor untouched unless a unit was delimited.
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..=64)) {
         // A valid preamble and a small length make it past the header.
@@ -189,52 +244,6 @@ proptest! {
             }
         }
     }
-
-    #[test]
-    fn codec8_frame_survives_single_byte_corruption(
-        (bytes, index, replacement) in avl_frame_with_corruption(AvlCodec::Codec8)
-    ) {
-        check_corrupted(bytes, index, replacement)?;
-    }
-
-    #[test]
-    fn codec8_extended_frame_survives_single_byte_corruption(
-        (bytes, index, replacement) in avl_frame_with_corruption(AvlCodec::Codec8Extended)
-    ) {
-        check_corrupted(bytes, index, replacement)?;
-    }
-
-    #[test]
-    fn codec16_frame_survives_single_byte_corruption(
-        (bytes, index, replacement) in avl_frame_with_corruption(AvlCodec::Codec16)
-    ) {
-        check_corrupted(bytes, index, replacement)?;
-    }
-
-    #[test]
-    fn codec12_frame_survives_single_byte_corruption(
-        (bytes, index, replacement) in codec12_frame_with_corruption()
-    ) {
-        check_corrupted(bytes, index, replacement)?;
-    }
-}
-
-fn check_corrupted(mut bytes: Vec<u8>, index: usize, replacement: u8) -> Result<(), TestCaseError> {
-    bytes[index] = replacement;
-    let mut rest = &bytes[..];
-    match take_frame(&mut rest) {
-        Ok(_) | Err(DecodeFrameError::InvalidFrame { .. }) => {
-            // Delimited: the cursor is past the frame, as long as the length
-            // field wasn't corrupted.
-            if !(4..8).contains(&index) {
-                prop_assert!(rest.is_empty());
-            }
-        }
-        Err(DecodeFrameError::Incomplete { .. } | DecodeFrameError::InvalidHeader(_)) => {
-            prop_assert_eq!(rest.len(), bytes.len());
-        }
-    }
-    Ok(())
 }
 
 /// The IO elements of a recipe, as the library encoder takes them.
@@ -276,9 +285,13 @@ fn recipe_io(recipe: &AvlRecordRecipe, codec: AvlCodec) -> RecipeIo {
     }
 }
 
-/// Encodes `recipes` with the library encoder, reading each field as the
-/// strategy's own encoder writes it for `codec`.
-fn encode_with_library(codec: AvlCodec, recipes: &[AvlRecordRecipe]) -> Vec<u8> {
+/// Encodes `recipes` into a frame and a datagram with the library encoders,
+/// reading each field as the strategy's own encoder writes it for `codec`.
+fn encode_with_library(
+    codec: AvlCodec,
+    recipes: &[AvlRecordRecipe],
+    header: &DatagramRecipe,
+) -> (Vec<u8>, Vec<u8>) {
     let ios: Vec<RecipeIo> = recipes
         .iter()
         .map(|recipe| recipe_io(recipe, codec))
@@ -326,29 +339,13 @@ fn encode_with_library(codec: AvlCodec, recipes: &[AvlRecordRecipe]) -> Vec<u8> 
             record
         })
         .collect();
-    encode_avl_frame(codec, &records).expect("strategy records fit their codec")
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
-
-    // The strategy's encoder is written independently from the library's,
-    // from the wiki layouts; both must produce the same bytes.
-
-    #[test]
-    fn codec8_library_encoder_matches_the_reference((bytes, recipes) in avl_frame(AvlCodec::Codec8)) {
-        prop_assert_eq!(encode_with_library(AvlCodec::Codec8, &recipes), bytes);
-    }
-
-    #[test]
-    fn codec8_extended_library_encoder_matches_the_reference(
-        (bytes, recipes) in avl_frame(AvlCodec::Codec8Extended)
-    ) {
-        prop_assert_eq!(encode_with_library(AvlCodec::Codec8Extended, &recipes), bytes);
-    }
-
-    #[test]
-    fn codec16_library_encoder_matches_the_reference((bytes, recipes) in avl_frame(AvlCodec::Codec16)) {
-        prop_assert_eq!(encode_with_library(AvlCodec::Codec16, &recipes), bytes);
-    }
+    let header = DatagramHeaderFields {
+        packet_id: header.packet_id,
+        avl_packet_id: header.avl_packet_id,
+        imei: ImeiView::try_from(&header.imei[..]).unwrap(),
+    };
+    (
+        encode_avl_frame(codec, &records).expect("strategy records fit their codec"),
+        encode_avl_datagram(header, codec, &records).expect("strategy records fit a datagram"),
+    )
 }

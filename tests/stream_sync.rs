@@ -113,7 +113,8 @@ fn should_ask_for_all_the_free_space_in_each_read() {
 
     assert!(matches!(stream.read_frame().unwrap(), FrameView::Avl(_)));
     assert_eq!(stream.get_ref().requested, vec![2560]);
-    // The second frame came in the same read.
+    // The second frame came in the same read, and is there to hand back.
+    assert_eq!(stream.buffer(), bytes(CODEC12_COMMAND));
     assert!(matches!(stream.read_frame().unwrap(), FrameView::Gprs(_)));
     assert_eq!(stream.get_ref().requested, vec![2560]);
 }
@@ -149,18 +150,6 @@ fn should_grow_once_for_a_frame_longer_than_the_buffer_and_shrink_when_asked() {
     assert_eq!(stream.capacity(), 8192);
     stream.shrink_to_fit();
     assert_eq!(stream.capacity(), 1280);
-}
-
-#[test]
-fn should_hand_back_the_bytes_buffered_past_a_frame() {
-    let mut input = bytes(CODEC8);
-    input.extend_from_slice(&bytes(CODEC12_COMMAND));
-    let mut stream = TeltonikaTcpStream::new(Cursor::new(input));
-
-    assert!(matches!(stream.read_frame().unwrap(), FrameView::Avl(_)));
-    assert_eq!(stream.buffer(), bytes(CODEC12_COMMAND));
-    let (_, unread) = stream.into_parts();
-    assert_eq!(unread, bytes(CODEC12_COMMAND));
 }
 
 #[test]

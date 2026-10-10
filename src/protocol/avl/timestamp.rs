@@ -144,6 +144,10 @@ mod tests {
         assert_eq!(u64::from(timestamp), 1_560_161_086_000);
         assert_eq!(SystemTime::try_from(timestamp), Ok(time));
 
+        // A timestamp counts milliseconds: anything finer is dropped.
+        let finer = SystemTime::UNIX_EPOCH + Duration::from_micros(1_234_567);
+        assert_eq!(AvlTimestamp::try_from(finer).map(u64::from), Ok(1_234));
+
         let before = SystemTime::UNIX_EPOCH - Duration::from_millis(1);
         assert_eq!(
             AvlTimestamp::try_from(before),
@@ -159,6 +163,9 @@ mod tests {
         let timestamp = AvlTimestamp::from(1_560_161_086_000);
         let time = chrono::DateTime::<chrono::Utc>::try_from(timestamp).unwrap();
         assert_eq!(AvlTimestamp::try_from(time), Ok(timestamp));
+
+        let before = chrono::TimeZone::timestamp_millis_opt(&chrono::Utc, -1).unwrap();
+        assert!(AvlTimestamp::try_from(before).is_err());
 
         assert_eq!(
             chrono::DateTime::<chrono::Utc>::try_from(AvlTimestamp::from(u64::MAX)),

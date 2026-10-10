@@ -39,15 +39,6 @@ pub const CODEC12_GETINFO_RESPONSE: &str = "00000000000000900C010600000088494E49
 /// Codec 12 device response to `getio`: "Codec 12 > GPRS commands
 /// examples > 2nd example".
 pub const CODEC12_GETIO_RESPONSE: &str = "00000000000000370C01060000002F4449313A31204449323A30204449333A302041494E313A302041494E323A313639323420444F313A3020444F323A3101000066E3";
-/// Command text sent every 10 seconds by the independent Node.js device
-/// simulator <https://github.com/aymen2709/teltonika-client>, captured by
-/// running that project's `client.js` against this crate's TCP server.
-/// Only this payload text is third-party; the frame around it is
-/// produced by this crate's own [`nom_teltonika::encoder::encode_gprs_frame`],
-/// so decoding it exercises an own-encoder round-trip over a real-world
-/// payload, not a decode of third-party bytes.
-pub const MEDISAIL_COMMAND_TEXT: &str = "MEDISAIL&1=2661.00&2=324300.00&3=0&4=0&5=355000.00&6=358.10&7=13.40&8=53.30&9=12467683.00&10=48500.00&11=22000.00&12=51&13=26&14=344500.00&15=394.60&20=4.50&21=-1000000000.00&22=-1000000000.00&23=4.62&24=6.07&25=278.35&26=293.35&27=101300.00&28=278.35&29=-1000000000.00&30=56.80&31=42.00&32=101300.00&33=278.35&34=-0.10&39=9.13&40=6.36&42=1&AYMEN";
-
 /// Decodes a hexadecimal fixture.
 pub fn bytes(value: &str) -> std::vec::Vec<u8> {
     hex::decode(value).unwrap()
