@@ -90,30 +90,22 @@ protocol in a way worth knowing.
 
 ## Performance
 
-`cargo bench --bench decoder` measures decoding, the stream, and encoding on
-frames built by the crate's own encoders. Medians on an Apple M1 Pro with
-Rust 1.98, for packets of 10 records:
+One thread decodes about 18 million records per second, CRC check and
+validation included, and the stream wrapper costs about 3% on top. Medians of
+`cargo bench --bench decoder -- bulk` on an Apple M1 Pro with Rust 1.98, over
+64 MiB of mixed traffic (58,697 frames of every codec, 726,551 records of 5
+or 22 IO elements):
 
-| Operation | Codec 8 (525 B) | Codec 8 Extended (815 B) | Codec 16 (595 B) |
-| --- | --- | --- | --- |
-| Decode a frame: check the CRC and validate | 327 ns | 505 ns | 365 ns |
-| Decode, then read every record and IO element | 669 ns | 935 ns | 705 ns |
-| Decode, then copy into an owned `Frame` | 936 ns | 1.35 µs | 973 ns |
-| Encode a frame | 536 ns | 672 ns | 539 ns |
-
-Decoding a frame runs at about 1.5 GiB/s. A UDP datagram of 10 Codec 8
-records (536 B), which has no CRC, decodes in 127 ns.
-
-Through `TeltonikaTcpStream`, reading from memory:
-
-| Input | Time | Throughput |
+| Operation | Throughput | Records per second |
 | --- | --- | --- |
-| 10 Codec 8 Extended frames (12,150 B) | 8.1 µs | 1.4 GiB/s |
-| One Codec 12 frame of 32 KiB | 16.7 µs | 1.8 GiB/s |
+| Decode | 1.5 GiB/s | 18.0 million |
+| Decode and read every record and IO element | 780 MiB/s | 8.9 million |
+| Decode and copy into an owned `Frame` | 523 MiB/s | 5.9 million |
+| Read through `TeltonikaTcpStream` | 1.5 GiB/s | 17.4 million |
+| Decode UDP datagrams, which have no CRC | 6.0 GiB/s | |
+| Encode | 1.0 GiB/s | |
 
 Numbers depend on the machine: run the benchmark to compare.
-
-TODO: More significant benchmarks with a LOT more data.
 
 ## Testing a server
 
@@ -136,4 +128,4 @@ and [Codec](https://wiki.teltonika-gps.com/view/Codec) documentation.
 
 ## License
 
-MIT
+[MIT](./LICENSE)
