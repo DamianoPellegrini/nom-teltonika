@@ -4,6 +4,6 @@ fn main() {
     let mut buffer = Vec::new();
     std::io::Read::read_to_end(&mut file, &mut buffer).unwrap();
     // Decode file.bin
-    let decoded = nom_teltonika::decoder::decode_tcp_frame(&buffer).unwrap();
-    println!("{:#?}", decoded.value);
+    let frame = nom_teltonika::decoder::take_frame(&mut &buffer[..]).unwrap();
+    println!("{frame:#?}");
 }

@@ -1,25 +1,28 @@
 //! A small Tokio TCP server that handles each Teltonika device in a task.
 //!
-//! Run with `cargo run --example tcp_server_tokio --features tokio`.
+//! Run with `cargo run --example tcp_server_tokio --features tokio [-- ADDRESS]`;
+//! the address defaults to `0.0.0.0:5000`, which macOS's AirPlay Receiver
+//! may already hold.
 
 use std::{error::Error, net::SocketAddr};
 
 use nom_teltonika::{
-    decoder::{DecodeError, decode_imei},
-    protocol::{AvlPacket, Frame, Imei},
-    stream::{StreamReadError, TeltonikaTcpStream},
+    protocol::{AvlPacketView, FrameView, Imei},
+    tcp::{ReadFrameError, TeltonikaTcpStream},
 };
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDRESS: &str = "0.0.0.0:5000";
-const IMEI_FRAME_BYTES: usize = 17;
 
 type ServerError = Box<dyn Error + Send + Sync>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), ServerError> {
-    let listener = tokio::net::TcpListener::bind(LISTEN_ADDRESS).await?;
-    println!("listening on {LISTEN_ADDRESS}");
+    let address = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| LISTEN_ADDRESS.into());
+    let listener = TcpListener::bind(&address).await?;
+    println!("listening on {address}");
 
     loop {
         match listener.accept().await {
@@ -40,15 +43,15 @@ async fn main() -> Result<(), ServerError> {
     }
 }
 
-async fn handle_connection(mut socket: TcpStream, peer: SocketAddr) -> Result<(), ServerError> {
-    // The IMEI handshake comes before regular AVL or Codec 12 frames.
-    let mut handshake = [0_u8; IMEI_FRAME_BYTES];
-    socket.read_exact(&mut handshake).await?;
-    let imei = decode_imei(&handshake)?.value;
-
-    // Replace this with an allow-list or a call such as AuthService::is_allowed(imei).await.
-    let accepted = is_device_allowed(imei);
+async fn handle_connection(socket: TcpStream, peer: SocketAddr) -> Result<(), ServerError> {
     let mut stream = TeltonikaTcpStream::new(socket);
+
+    // The IMEI handshake comes before regular AVL or Codec 12 frames. Keep an
+    // owned copy: the view borrows the stream only until the next read.
+    let imei = stream.read_imei_async().await?.evaluate();
+
+    // Replace this with an allow-list or a call such as AuthService::is_allowed(imei).
+    let accepted = is_device_allowed(&imei);
     stream.write_imei_approval_async(accepted).await?;
     if !accepted {
         println!("rejected device from {peer}");
@@ -60,12 +63,12 @@ async fn handle_connection(mut socket: TcpStream, peer: SocketAddr) -> Result<()
 
     loop {
         match stream.read_frame_async().await {
-            Ok(Frame::Avl(packet)) => {
+            Ok(FrameView::Avl(packet)) => {
                 let record_count = packet.records().len() as u32;
 
                 // Acknowledge only after the records are durable. Replace this with, for
-                // example, StorageService::persist(imei, packet.records()).await.
-                if !persist_records(imei, &packet) {
+                // example, StorageService::persist(imei, packet.records()).
+                if !persist_records(&imei, packet) {
                     stream.write_avl_nack_async().await?;
                     eprintln!("could not persist {record_count} record(s) from {peer}");
                     continue;
@@ -79,39 +82,47 @@ async fn handle_connection(mut socket: TcpStream, peer: SocketAddr) -> Result<()
                     command_sent = true;
                 }
             }
-            Ok(Frame::Codec12(packet)) => {
+            Ok(FrameView::Gprs(packet)) => {
                 // In production, correlate responses with queued commands and avoid logging
                 // payloads that may contain sensitive device information.
-                println!("Codec 12 message from {peer}: {:?}", packet.message());
+                for message in packet.messages() {
+                    println!(
+                        "Codec 12 {:?} from {peer}: {}",
+                        message.kind(),
+                        String::from_utf8_lossy(message.payload())
+                    );
+                }
             }
             Ok(_) => {
-                // Frame is non-exhaustive so newer library versions can add codecs.
+                // FrameView is non-exhaustive so newer library versions can add codecs.
                 eprintln!("unsupported frame from {peer}");
             }
-            Err(StreamReadError::Closed) => {
+            Err(ReadFrameError::Closed) => {
                 println!("device at {peer} disconnected");
                 return Ok(());
             }
-            Err(error @ StreamReadError::Decode(DecodeError::Rejected { .. })) => {
-                // Rejected, delimited frames are already consumed. Decide here whether your
-                // device policy should continue, disconnect, or send a protocol-specific NACK.
-                eprintln!("rejected frame from {peer}: {error}");
+            Err(error @ ReadFrameError::InvalidFrame(_)) => {
+                // The invalid frame is already consumed: ask the device to send it again.
+                eprintln!("invalid frame from {peer}: {error}");
+                stream.write_avl_nack_async().await?;
             }
             Err(error) => {
-                // Truncated frames, fatal framing, and I/O failures end this device session.
+                // Truncated frames, invalid headers, and I/O failures end this device session.
                 return Err(error.into());
             }
         }
     }
 }
 
-fn is_device_allowed(imei: Imei) -> bool {
+fn is_device_allowed(imei: &Imei) -> bool {
     let _ = imei;
     true
 }
 
-fn persist_records(imei: Imei, packet: &AvlPacket) -> bool {
-    let _ = imei;
-    println!("received {} AVL record(s)", packet.records().len());
+fn persist_records(imei: &Imei, packet: AvlPacketView<'_>) -> bool {
+    println!(
+        "received {} AVL record(s) from {imei}",
+        packet.records().len()
+    );
     true
 }

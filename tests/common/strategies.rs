@@ -1,12 +1,15 @@
 #![allow(dead_code)]
 
-use nom_teltonika::{encoder::encode_codec12_commands, protocol::AvlCodec};
+use nom_teltonika::{
+    encoder::encode_gprs_frame,
+    protocol::{AvlCodec, GprsMessageType},
+};
 use proptest::prelude::*;
 use proptest::{collection, sample};
 
 use super::tcp_frame_from_data;
 
-/// Random-but-consistent field values for one AVL record, before wire encoding.
+/// Random-but-consistent field values for one AVL record, before encoding.
 #[derive(Debug, Clone)]
 pub struct AvlRecordRecipe {
     pub timestamp: u64,
@@ -83,8 +86,7 @@ fn push_id(out: &mut Vec<u8>, codec: AvlCodec, id: u16) {
     }
 }
 
-/// Encodes one record exactly as `src/decoder.rs::decode_record` expects it,
-/// for the given codec's field widths.
+/// Encodes one record with the given codec's field widths.
 fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&recipe.timestamp.to_be_bytes());
@@ -106,16 +108,15 @@ fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
         out.push(recipe.generation_type);
     }
 
-    let extended_count = if codec == AvlCodec::Codec8Extended {
-        recipe.io_bytes.len()
-    } else {
-        0
-    };
-    let total = (recipe.io_u8.len()
-        + recipe.io_u16.len()
-        + recipe.io_u32.len()
-        + recipe.io_u64.len()
-        + extended_count) as u16;
+    // "N = N1 + N2 + N4 + N8" (https://wiki.teltonika-gps.com/view/Codec,
+    // "Codec 8 Extended > IO Element", accessed 2026-09-24), plus NX in
+    // Codec 8 Extended, as devices send it.
+    let mut total =
+        recipe.io_u8.len() + recipe.io_u16.len() + recipe.io_u32.len() + recipe.io_u64.len();
+    if codec == AvlCodec::Codec8Extended {
+        total += recipe.io_bytes.len();
+    }
+    let total = total as u16;
     push_count(&mut out, codec, total);
 
     push_count(&mut out, codec, recipe.io_u8.len() as u16);
@@ -151,43 +152,80 @@ fn encode_record(codec: AvlCodec, recipe: &AvlRecordRecipe) -> Vec<u8> {
     out
 }
 
-/// Assembles a complete, CRC-correct TCP frame from already-generated records.
-pub fn build_avl_frame(codec: AvlCodec, records: &[AvlRecordRecipe]) -> Vec<u8> {
-    let mut data = vec![codec.id(), records.len() as u8];
+/// Returns the data field of an AVL packet, from the codec ID to the second
+/// record count.
+pub fn build_avl_data(codec: AvlCodec, records: &[AvlRecordRecipe]) -> Vec<u8> {
+    let mut data = vec![u8::from(codec), records.len() as u8];
     for record in records {
         data.extend_from_slice(&encode_record(codec, record));
     }
     data.push(records.len() as u8);
-    tcp_frame_from_data(&data)
+    data
 }
 
-/// A structurally valid AVL frame for `codec`, alongside the record recipes it encodes.
-pub fn avl_frame(codec: AvlCodec) -> impl Strategy<Value = (Vec<u8>, Vec<AvlRecordRecipe>)> {
-    collection::vec(avl_record_recipe(), 1..=3)
-        .prop_map(move |records| (build_avl_frame(codec, &records), records))
+/// The header of a UDP datagram, before encoding.
+#[derive(Debug, Clone)]
+pub struct DatagramRecipe {
+    pub packet_id: u16,
+    pub avl_packet_id: u8,
+    pub imei: String,
 }
 
-/// A valid AVL frame for `codec` plus a random byte offset and replacement byte.
-pub fn avl_frame_with_corruption(codec: AvlCodec) -> impl Strategy<Value = (Vec<u8>, usize, u8)> {
-    avl_frame(codec).prop_flat_map(|(bytes, _records)| {
-        let len = bytes.len();
-        (Just(bytes), 0..len, any::<u8>())
+/// Returns a datagram: the length of what follows, the packet ID, the "not
+/// usable" byte, the AVL packet ID, the IMEI with its length, and the data
+/// field (<https://wiki.teltonika-gps.com/view/Codec>, "Codec 8 > Codec8
+/// protocol sending over UDP", accessed 2026-10-10).
+pub fn build_datagram(header: &DatagramRecipe, data: &[u8]) -> Vec<u8> {
+    let after_length = 2 + 1 + 1 + 2 + header.imei.len() + data.len();
+    let mut out = (after_length as u16).to_be_bytes().to_vec();
+    out.extend_from_slice(&header.packet_id.to_be_bytes());
+    out.extend_from_slice(&[0x01, header.avl_packet_id]);
+    out.extend_from_slice(&(header.imei.len() as u16).to_be_bytes());
+    out.extend_from_slice(header.imei.as_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+/// One to three records for any AVL codec. The codec is drawn with the
+/// records, so one property covers the three.
+pub fn avl_packet() -> impl Strategy<Value = (AvlCodec, Vec<AvlRecordRecipe>)> {
+    (
+        sample::select(vec![
+            AvlCodec::Codec8,
+            AvlCodec::Codec8Extended,
+            AvlCodec::Codec16,
+        ]),
+        collection::vec(avl_record_recipe(), 1..=3),
+    )
+}
+
+/// The header of a datagram from a device with a 15-digit IMEI.
+pub fn datagram_recipe() -> impl Strategy<Value = DatagramRecipe> {
+    (any::<u16>(), any::<u8>(), "[0-9]{15}").prop_map(|(packet_id, avl_packet_id, imei)| {
+        DatagramRecipe {
+            packet_id,
+            avl_packet_id,
+            imei,
+        }
     })
 }
 
-/// A structurally valid Codec 12 command frame, alongside the message count it encodes.
-pub fn codec12_frame() -> impl Strategy<Value = (Vec<u8>, usize)> {
-    collection::vec(collection::vec(any::<u8>(), 0..=16), 1..=4).prop_map(|commands| {
-        let refs: Vec<&[u8]> = commands.iter().map(Vec::as_slice).collect();
-        let bytes = encode_codec12_commands(refs).expect("1..=4 small commands always encode");
-        (bytes, commands.len())
-    })
+/// One to four Codec 12 messages of up to 16 bytes.
+pub fn gprs_messages() -> impl Strategy<Value = Vec<Vec<u8>>> {
+    collection::vec(collection::vec(any::<u8>(), 0..=16), 1..=4)
 }
 
-/// A valid Codec 12 frame plus a random byte offset and replacement byte.
-pub fn codec12_frame_with_corruption() -> impl Strategy<Value = (Vec<u8>, usize, u8)> {
-    codec12_frame().prop_flat_map(|(bytes, _count)| {
-        let len = bytes.len();
-        (Just(bytes), 0..len, any::<u8>())
-    })
+/// Returns the Codec 12 command frame of `messages`.
+pub fn build_gprs_frame(messages: &[Vec<u8>]) -> Vec<u8> {
+    encode_gprs_frame(GprsMessageType::Command, messages)
+        .expect("1..=4 small commands always encode")
+}
+
+/// A valid frame of any supported codec.
+pub fn frame() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        3 => avl_packet()
+            .prop_map(|(codec, records)| tcp_frame_from_data(&build_avl_data(codec, &records))),
+        1 => gprs_messages().prop_map(|messages| build_gprs_frame(&messages)),
+    ]
 }

@@ -1,0 +1,28 @@
+[package]
+name = "teltonika-comparison"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Benchmarks of nom-teltonika against other Teltonika parsers and its own 0.1.6 release"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "teltonika-comparison"
+path = "src/main.rs"
+
+[dependencies]
+nom-teltonika = { path = "../.." }
+teltonika-simulator = { path = "../simulator" }
+serde_json = "1.0.102"
+# The parsers compared, pinned: a result belongs to one version.
+nom-teltonika-0-1-6 = { package = "nom-teltonika", version = "=0.1.6" }
+teltonika-avl-protocol = "=0.1.0"
+teltonika-rs = "=0.1.1"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "parsers"
+harness = false
