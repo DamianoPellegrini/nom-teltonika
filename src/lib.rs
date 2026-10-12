@@ -185,6 +185,11 @@
 //! - Positions are kept as sent. A record without a GPS fix is valid data.
 //!   Check
 //!   [`GpsElement::is_position_valid`](protocol::GpsElement::is_position_valid).
+//! - The wiki doesn't say whether the altitude has a sign.
+//!   [`GpsElement::altitude_meters`](protocol::GpsElement::altitude_meters)
+//!   is unsigned, as sent. Below sea level, use
+//!   [`GpsElement::altitude_meters_signed`](protocol::GpsElement::altitude_meters_signed),
+//!   which explains the two readings.
 //! - An IMEI is ASCII text of the length the device declares. It is not
 //!   necessarily 15 digits.
 //! - In a UDP datagram, the byte after the packet ID isn't checked. The wiki

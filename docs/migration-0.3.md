@@ -182,7 +182,7 @@ have methods instead, which return the values as sent.
 | `timestamp: DateTime<Utc>` | `timestamp()` → [`AvlTimestamp`](crate::protocol::AvlTimestamp) (milliseconds) |
 | `priority` | `priority()` → [`Priority`](crate::protocol::Priority) |
 | `longitude`, `latitude: f64` | `gps().longitude_degrees()`, `gps().latitude_degrees()`; raw in `longitude_raw`, `latitude_raw` |
-| `altitude`, `angle`, `satellites`, `speed` | `gps().altitude_meters`, `angle_degrees`, `satellites`, `speed_kph` |
+| `altitude`, `angle`, `satellites`, `speed` | `gps().altitude_meters`, `angle_degrees`, `satellites`, `speed_kph`; `gps().altitude_meters_signed()` below sea level |
 | `trigger_event_id: u16` | `event_io_id()` → `Option<IoId>`, `None` for 0 |
 | `generation_type: Option<EventGenerationCause>` | `generation_type()` → `Option<GenerationType>`, `None` outside Codec 16 |
 | `io_events: Vec<AVLEventIO>` | `io_elements()`, an iterator on views or a slice on owned records |

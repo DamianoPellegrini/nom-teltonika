@@ -13,7 +13,10 @@ pub struct GpsElement {
     pub longitude_raw: i32,
     /// Latitude in degrees multiplied by 10,000,000; negative is south.
     pub latitude_raw: i32,
-    /// Altitude above sea level, in meters.
+    /// Altitude above sea level, in meters, read as unsigned.
+    ///
+    /// The wiki doesn't say how a device sends an altitude below sea level:
+    /// see [`altitude_meters_signed`](Self::altitude_meters_signed).
     pub altitude_meters: u16,
     /// Heading, in degrees clockwise from north.
     pub angle_degrees: u16,
@@ -101,6 +104,55 @@ impl GpsElement {
         f64::from(self.latitude_raw) / COORDINATE_SCALE
     }
 
+    /// Returns the altitude in meters, read as a signed number: negative
+    /// below sea level.
+    ///
+    /// The wiki describes the field as "meters above sea level", in 2 bytes,
+    /// and says nothing of its sign. It describes the sign of the
+    /// coordinates only. So [`altitude_meters`](Self::altitude_meters) keeps
+    /// the plain reading, where the bytes `FF F6` are 65,526 meters. Read as
+    /// two's complement, like the coordinates, they are 10 meters below sea
+    /// level, which exists on land: parts of the Netherlands, the Dead Sea
+    /// shore.
+    ///
+    /// Nothing in the wiki settles which one a device means. Two facts
+    /// favor the signed reading. Teltonika writes an altitude with a sign in
+    /// another place: the IO element "ISO6709 Coordinates" (AVL ID 387) has
+    /// the format `±DDMMSS.SSSS±DDDMMSS.SSSS±AAA.AAA/` ([FMB120 Teltonika
+    /// Data Sending Parameters ID], accessed 2026-10-12). And most other
+    /// decoders, [Traccar] among them, read these 2 bytes as signed. The
+    /// two readings agree up to 32,767 meters, far above any road.
+    ///
+    /// Use this method unless you know that your devices send an unsigned
+    /// altitude. To encode an altitude below sea level, set the field with
+    /// [`i16::cast_unsigned`].
+    ///
+    /// Field: <https://wiki.teltonika-gps.com/view/Codec>, section "Codec 8 >
+    /// AVL Data > GPS element" (accessed 2026-10-12).
+    ///
+    /// [FMB120 Teltonika Data Sending Parameters ID]: https://wiki.teltonika-gps.com/view/FMB120_Teltonika_Data_Sending_Parameters_ID
+    /// [Traccar]: https://www.traccar.org
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nom_teltonika::protocol::GpsElement;
+    ///
+    /// let gps = GpsElement {
+    ///     longitude_raw: 47_000_000,
+    ///     latitude_raw: 520_000_000,
+    ///     altitude_meters: 0xfff6,
+    ///     angle_degrees: 0,
+    ///     satellites: 9,
+    ///     speed_kph: 0,
+    /// };
+    /// assert_eq!(gps.altitude_meters, 65_526);
+    /// assert_eq!(gps.altitude_meters_signed(), -10);
+    /// ```
+    pub const fn altitude_meters_signed(&self) -> i16 {
+        self.altitude_meters.cast_signed()
+    }
+
     /// Returns `true` if the record carries a valid fix.
     ///
     /// Without a fix, the wiki says satellites, angle, and speed are 0, while
@@ -155,5 +207,20 @@ mod tests {
         assert_eq!(gps.speed_kph, 42);
         assert!(gps.longitude_degrees() < 0.0);
         assert_eq!(gps.to_bytes(), sent);
+    }
+
+    #[test]
+    fn reads_altitude_unsigned_and_signed() {
+        let mut sent = [0; GpsElement::LEN];
+        sent[8..10].copy_from_slice(&[0xff, 0xf6]);
+        let below = GpsElement::from_bytes(&sent);
+        assert_eq!(below.altitude_meters, 65_526);
+        assert_eq!(below.altitude_meters_signed(), -10);
+        assert_eq!(below.to_bytes(), sent);
+
+        sent[8..10].copy_from_slice(&[0x7f, 0xff]);
+        let above = GpsElement::from_bytes(&sent);
+        assert_eq!(above.altitude_meters, 32_767);
+        assert_eq!(above.altitude_meters_signed(), 32_767);
     }
 }
