@@ -23,7 +23,7 @@ include = [
 ]
 
 [workspace]
-members = ["tools/simulator"]
+members = ["tools/simulator", "tools/comparison"]
 
 [features]
 default = ["std"]
