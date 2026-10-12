@@ -107,6 +107,40 @@ or 22 IO elements):
 
 Numbers depend on the machine: run the benchmark to compare.
 
+### Against 0.1.6 and other parsers
+
+`tools/comparison` gives every parser the same frames and the same job:
+decode them and add up the values they hold, so no field can be skipped.
+Medians of `cargo bench -p teltonika-comparison` on the same machine, over
+64 MiB of Codec 8 frames of 1 to 4 records, which is what every parser here
+can decode (235,471 frames, 588,676 records of 22 IO elements):
+
+| Parser | Output | Throughput | Records per second | Against 0.1.6 |
+| --- | --- | --- | --- | --- |
+| nom-teltonika, this version | Validated views, records counted | 2.0 GiB/s | 18.9 million | 13.4× |
+| nom-teltonika, this version | Validated views, every value read | 736 MiB/s | 6.8 million | 4.8× |
+| nom-teltonika, this version | Owned `Frame` | 386 MiB/s | 3.6 million | 2.5× |
+| nom-teltonika 0.1.6 | Owned `TeltonikaFrame` | 153 MiB/s | 1.4 million | 1× |
+| teltonika-rs 0.1.1 | Owned `TeltonikaCodec8` | 246 MiB/s | 2.3 million | 1.6× |
+| teltonika-avl-protocol 0.1.0 | Fixed-capacity `Codec8Packet` | 113 MiB/s | 1.0 million | 0.7× |
+
+The first row validates the frames and counts their records without reading
+the values. teltonika-rs returns a frame whose CRC doesn't match, after
+printing a message; the other parsers refuse it.
+
+Over 64 MiB of every codec (Codec 8, 8 Extended, and 16 frames of 1 to 32
+records, with Codec 12 responses), which only nom-teltonika decodes:
+
+| Parser | Output | Throughput | Records per second | Against 0.1.6 |
+| --- | --- | --- | --- | --- |
+| nom-teltonika, this version | Validated views, records counted | 1.7 GiB/s | 14.0 million | 11.3× |
+| nom-teltonika, this version | Validated views, every value read | 762 MiB/s | 6.0 million | 4.9× |
+| nom-teltonika, this version | Owned `Frame` | 475 MiB/s | 3.8 million | 3.0× |
+| nom-teltonika 0.1.6 | Owned `TeltonikaFrame` | 156 MiB/s | 1.2 million | 1× |
+
+`cargo run --release -p teltonika-comparison` prints these tables from the
+last benchmark run.
+
 ## Testing a server
 
 `tools/simulator` in this repository simulates devices: it connects over
