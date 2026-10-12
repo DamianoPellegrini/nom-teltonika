@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/DamianoPellegrini/nom-teltonika/compare/nom-teltonika-v0.2.0...nom-teltonika-v0.3.0) - 2026-10-12
+
+### Added
+
+- *(protocol)* add a signed reading of the altitude
+- [**breaking**] rewrite decoders as views over a no_std core, with encoders and udp
+
+### Other
+
+- rewrite the guides and the crate docs in short sentences
+- simplify the performance section and the comparison docs
+- add the comparison with 0.1.6 and other parsers to the readme
+- lint, test, and run the parser comparison
+- compare with 0.1.6 and other parsers on the same frames
+- run the tests without default features and with alloc only
+- rebuild the suite from the factors that vary
+- benchmark 64 MiB of mixed traffic
+- run doctests, the simulator, and a load test
+- add a device simulator as a workspace member
+- added proptest and more codec parsing
+- fix readme syntax highlighting
+
 ## [0.2.0](https://github.com/DamianoPellegrini/nom-teltonika/compare/v0.1.6...v0.2.0) - 2026-07-21
 
 ### Added
