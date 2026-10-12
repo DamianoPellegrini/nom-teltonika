@@ -1,26 +1,26 @@
 # Migrate to 0.3
 
-Version 0.3 replaces both the `nom`-based 0.1 API and the yanked 0.2.0. This
-guide starts from 0.1; notes marked **From 0.2.0** cover what changed for
-users of the yanked release. There are no deprecated aliases: every rename
-below is a compile error until you apply it.
+Version 0.3 replaces the `nom`-based 0.1 API and the yanked 0.2.0. This guide
+starts from 0.1. Notes marked **From 0.2.0** describe what changed since the
+yanked release. There are no deprecated aliases, so each rename below is a
+compile error until it is applied.
 
 ## What changed at a glance
 
-- **No `nom`.** Decoders are plain functions in two styles: `parse_*` takes
-  `&[u8]` and returns `(rest, value)`, as the 0.1 parsers did, and `take_*`
-  takes a `&mut &[u8]` cursor and advances it past what it decoded. A UDP
-  datagram has only `take_datagram`: nothing remains after it.
-- **Views, then owned values.** Decoders and streams return `*View` types
-  that borrow the input and were fully validated. Call `evaluate` (or use
-  [`From`]) for an owned value, such as [`Frame`](crate::protocol::Frame) or
-  [`AvlPacket`](crate::protocol::AvlPacket), that outlives the buffer.
-- **Values as sent.** Coordinates, timestamps, and IO values keep the
-  integers the device sent; conversions are methods.
-- **One error type per operation**, which tells you what to do next: read
-  more, skip the frame, or close the connection.
-- **`no_std` core.** Everything but streams and sockets works without `std`,
-  and decoding works without `alloc`.
+- Decoders no longer use `nom`. They are plain functions in two styles.
+  `parse_*` takes `&[u8]` and returns `(rest, value)`, as the 0.1 parsers did.
+  `take_*` takes a `&mut &[u8]` cursor and advances it past what it decoded. A
+  UDP datagram has only `take_datagram`, because nothing remains after it.
+- Decoders and streams return `*View` types. A view borrows the input and is
+  fully validated. Call `evaluate` or use [`From`] to get an owned value that
+  outlives the buffer, such as [`Frame`](crate::protocol::Frame) or
+  [`AvlPacket`](crate::protocol::AvlPacket).
+- Coordinates, timestamps, and IO values are kept as the integers the device
+  sent. Conversions are methods.
+- Each operation has its own error type. The error tells whether to read more,
+  skip the frame, or close the connection.
+- The core is `no_std`. Everything except streams and sockets works without
+  `std`, and decoding works without `alloc`.
 
 ## Update `Cargo.toml`
 
@@ -30,13 +30,15 @@ nom-teltonika = { version = "0.3", features = ["serde", "tokio"] }
 ```
 
 - Rust 1.87 or newer is required.
-- `std` is a default feature and implies `alloc`. With
-  `default-features = false` you keep the decoders and views; add `alloc` for
-  owned values and the `Vec` encoders, or `std` for streams and sockets.
-- `chrono` is now optional (0.1 always depended on it); enable it to convert
+- `std` is a default feature and enables `alloc`. With
+  `default-features = false`, the decoders and views remain. Add `alloc` for
+  owned values and the encoders that return a `Vec`, or `std` for streams and
+  sockets.
+- `chrono` is now optional. 0.1 always depended on it. Enable it to convert
   timestamps to `chrono::DateTime<Utc>`.
-- `tokio` enables the `*_async` methods; `tracing` emits stream and socket
-  events without IMEIs, coordinates, commands, or payloads.
+- `tokio` enables the `*_async` methods.
+- `tracing` emits events from the stream and the socket. The events contain no
+  IMEIs, coordinates, commands, or payloads.
 
 ## Find the new names
 
@@ -61,14 +63,16 @@ nom-teltonika = { version = "0.3", features = ["serde", "tokio"] }
 | `Codec` | [`Codec`](crate::protocol::Codec), [`AvlCodec`](crate::protocol::AvlCodec), [`GprsCodec`](crate::protocol::GprsCodec) |
 | IMEI as `String` | [`ImeiView`](crate::protocol::ImeiView) / [`Imei`](crate::protocol::Imei) |
 
-**From 0.2.0:** the modules keep their names. `Decoded<T>` is gone (the
-cursor tells what was consumed), `decode_*_with_limits` and
-`TcpLimits`/`UdpLimits`/`LimitsError` are gone (the limits are fixed, see
-below), and the decoders return views instead of owned values.
+**From 0.2.0:** The modules keep their names. The decoders return views instead
+of owned values. These items are gone:
+
+- `Decoded<T>`. The cursor shows what was consumed.
+- `decode_*_with_limits`, `TcpLimits`, `UdpLimits`, and `LimitsError`. The
+  limits are now fixed.
 
 ## Decode
 
-A decoder takes a cursor, advances it on success, and returns a view:
+A decoder takes a cursor, advances it on success, and returns a view.
 
 ```rust
 use nom_teltonika::decoder::take_frame;
@@ -95,7 +99,7 @@ let owned = frame.evaluate();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The IMEI handshake and UDP datagrams work the same way:
+The IMEI handshake and UDP datagrams work the same way.
 
 ```rust
 use nom_teltonika::decoder::{take_imei, take_datagram};
@@ -114,12 +118,12 @@ assert_eq!(datagram.imei().as_str(), "352093086403655");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`take_datagram` expects exactly one whole datagram: a length that
-doesn't match is an error, not a request for more bytes.
+`take_datagram` expects exactly one whole datagram. A length that doesn't match
+is an error, not a request for more bytes.
 
 ## Handle errors
 
-0.1 returned `nom::Err`. Each operation now has its own error:
+0.1 returned `nom::Err`. Each operation now has its own error type.
 
 | Operation | Error |
 | --- | --- |
@@ -132,7 +136,7 @@ doesn't match is an error, not a request for more bytes.
 | [`TeltonikaUdpSocket::receive_datagram`](crate::udp::TeltonikaUdpSocket::receive_datagram) | [`ReceiveDatagramError`](crate::udp::ReceiveDatagramError) |
 | [`encode_gprs_frame`](crate::encoder::encode_gprs_frame) | [`EncodeGprsError`](crate::encoder::EncodeGprsError) |
 
-On a growing TCP buffer, `DecodeFrameError` says what to do next:
+On a growing TCP buffer, `DecodeFrameError` tells what to do next.
 
 ```rust
 use nom_teltonika::decoder::{DecodeFrameError, take_frame};
@@ -157,18 +161,21 @@ fn next(buffer: &mut Vec<u8>) -> Result<bool, DecodeFrameError> {
 ```
 
 **From 0.2.0:** `DecodeError::{Incomplete, Rejected, Fatal}` became
-`DecodeFrameError::{Incomplete, InvalidFrame, InvalidHeader}`, with the
-reason inside ([`FrameError`](crate::decoder::FrameError),
-[`HeaderError`](crate::decoder::HeaderError)) instead of `consumed`,
-`offset`, and `RejectionReason`/`FatalReason`. `UdpDecodeError` became
-`DecodeDatagramError`, `StreamReadError` became `ReadFrameError`,
-`CommandWriteError` became `WriteCommandError`, `UdpReceiveError` became
-`ReceiveDatagramError`, and `EncodeError` became `EncodeGprsError`.
+`DecodeFrameError::{Incomplete, InvalidFrame, InvalidHeader}`. The reason is
+now inside the variant, as a [`FrameError`](crate::decoder::FrameError) or a
+[`HeaderError`](crate::decoder::HeaderError). It replaces `consumed`, `offset`,
+`RejectionReason`, and `FatalReason`. Other errors were renamed:
+
+- `UdpDecodeError` became `DecodeDatagramError`.
+- `StreamReadError` became `ReadFrameError`.
+- `CommandWriteError` became `WriteCommandError`.
+- `UdpReceiveError` became `ReceiveDatagramError`.
+- `EncodeError` became `EncodeGprsError`.
 
 ## Read record fields
 
 0.1 records had public fields with converted values. Views and owned values
-expose methods that return the values as sent:
+have methods instead, which return the values as sent.
 
 | 0.1 `AVLRecord` | 0.3 `AvlRecordView` / `AvlRecord` |
 | --- | --- |
@@ -207,24 +214,31 @@ for element in record.io_elements() {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`EventGenerationCause::None` has no counterpart: a missing generation type is
-`None`. Codec 12 payloads are bytes, as the protocol allows any content;
-convert them with `std::str::from_utf8` when you expect text.
+`EventGenerationCause::None` has no counterpart. A missing generation type is
+`None`.
 
-**From 0.2.0:** `AvlRecord` and `IoElement` fields are private; use the
-methods above. `AvlTimestamp::from_unix_millis`/`unix_millis` became
-[`From`] in both directions, `to_system_time`/`from_system_time` became
-[`TryFrom`], and `IoId::new`/`get` became [`From`]. `Codec12Message` and
-`CountStatus` are gone: each message carries its own type, and the
-second quantity is not compared with the first. `payload_as_str` is gone. `Imei` holds any ASCII
-text instead of exactly 15 digits, and `Datagram`'s
-`channel_packet_id()` is `packet_id()`.
+Codec 12 payloads are bytes, because the protocol allows any content. Use
+`std::str::from_utf8` when you expect text.
+
+**From 0.2.0:**
+
+- `AvlRecord` and `IoElement` fields are private. Use the methods above.
+- `AvlTimestamp::from_unix_millis` and `unix_millis` became [`From`] in both
+  directions.
+- `to_system_time` and `from_system_time` became [`TryFrom`].
+- `IoId::new` and `get` became [`From`].
+- `Codec12Message` and `CountStatus` are gone. Each message has its own type,
+  and the second quantity is not compared with the first.
+- `payload_as_str` is gone.
+- `Imei` holds any ASCII text instead of exactly 15 digits.
+- `Datagram::channel_packet_id()` is now `packet_id()`.
 
 ## Use the TCP stream
 
-`TeltonikaStream` handled both TCP and UDP; TCP is now
-[`TeltonikaTcpStream`](crate::tcp::TeltonikaTcpStream). Its reads return
-views valid until the next read, and it never acknowledges on its own.
+`TeltonikaStream` handled both TCP and UDP. TCP is now
+[`TeltonikaTcpStream`](crate::tcp::TeltonikaTcpStream). Its read methods return
+views that are valid until the next read. It never sends an acknowledgment on
+its own.
 
 | 0.1 `TeltonikaStream` | 0.3 `TeltonikaTcpStream` |
 | --- | --- |
@@ -254,7 +268,7 @@ stream.write_imei_approval(true)?;
 loop {
     match stream.read_frame() {
         Ok(FrameView::Avl(packet)) => {
-            // Acknowledge what you stored, not merely what decoded.
+            // Acknowledge the records you stored.
             let stored = packet.records().len() as u32;
             stream.write_avl_ack(stored)?;
         }
@@ -271,19 +285,19 @@ loop {
 # fn main() {}
 ```
 
-A view borrows the stream: read what you need from it before writing the
-acknowledgment, or `evaluate` it first.
+A view borrows the stream. Read what you need from the view before writing the
+acknowledgment, or call `evaluate` first.
 
-**From 0.2.0:** `StreamConfig`/`StreamConfigError` are gone (the buffer
-size is set with `with_capacity(capacity, inner)`), `read_frame` returns views, and the stream now reads the
-IMEI handshake too.
+**From 0.2.0:** `StreamConfig` and `StreamConfigError` are gone. Set the buffer
+size with `with_capacity(capacity, inner)`. `read_frame` returns views, and the
+stream now reads the IMEI handshake too.
 
 ## Use the UDP socket
 
 0.1 read UDP datagrams through `TeltonikaStream::read_datagram`, which can't
 tell devices apart. [`TeltonikaUdpSocket`](crate::udp::TeltonikaUdpSocket)
-returns each datagram with its source address, and acknowledges with the
-IDs of the datagram it acknowledges:
+returns each datagram with its source address. An acknowledgment takes the IDs
+of the datagram it answers.
 
 ```rust no_run
 # #[cfg(feature = "std")]
@@ -304,14 +318,14 @@ socket.send_ack_to(peer, ids, stored)?;
 # fn main() {}
 ```
 
-**From 0.2.0:** `recv_datagram` became `receive_datagram`, `send_ack_to`
-takes the [`DatagramIds`](crate::protocol::DatagramIds) instead of two
-integers, and `with_limits` is gone: datagrams are never truncated.
+**From 0.2.0:** `recv_datagram` became `receive_datagram`. `send_ack_to` takes
+the [`DatagramIds`](crate::protocol::DatagramIds) instead of two integers.
+`with_limits` is gone, because datagrams are never truncated.
 
 ## Encode
 
-The [`encoder`](crate::encoder) module (new in 0.2) encodes what the stream
-writes, for applications that own their I/O:
+The [`encoder`](crate::encoder) module, new in 0.2, encodes what the stream
+writes. Use it in applications that do their own I/O.
 
 ```rust
 use nom_teltonika::encoder::{encode_avl_ack, encode_gprs_frame_into, encode_imei_approval};
@@ -327,39 +341,42 @@ assert_eq!(len, 27);
 # Ok::<(), nom_teltonika::encoder::EncodeGprsError>(())
 ```
 
-**From 0.2.0:** Codec 12 encoders take a slice (`&["getinfo"]`) instead of
-an iterator, `encode_udp_ack` takes the datagram's `DatagramIds`, and frames
-are limited to 65,535 bytes, the longest the decoder accepts.
+**From 0.2.0:** Codec 12 encoders take a slice (`&["getinfo"]`) instead of an
+iterator. `encode_udp_ack` takes the datagram's `DatagramIds`. Frames are
+limited to 65,535 bytes, the longest the decoder accepts.
 
 ## Expect these behavior changes
 
-The decoders follow Teltonika's documentation, which changes what is
-accepted:
+The decoders follow Teltonika's documentation, so what they accept has changed:
 
-- **IMEI.** Any ASCII text of the declared length is accepted, over TCP and
-  UDP.
-  Real IMEIs are 15 digits; check that yourself if you need it.
-- **UDP.** The byte after the packet ID is not checked: the documentation
-  sets it to `0x01` only in acknowledgments. 0.1 rejected other values.
-- **Codec 12.** Both commands (`0x05`) and responses (`0x06`) are decoded;
-  0.1 accepted only responses. The second quantity is not compared with the first; 0.1 required them to agree.
-- **Codec 8 Extended.** "N of Total IO" must equal the number of 1-, 2-,
-  4-, 8-byte, and variable-length elements (N1 + N2 + N4 + N8 + NX), as
-  devices send it.
-- **Packets** without records are invalid.
-- **Frames** with an unsupported codec, such as Codec 13, are skipped as
-  invalid instead of ending the stream.
-- **Limits** are fixed: 1280 bytes for Codec 8 and Codec 8 Extended
-  frames, as documented by Teltonika, and 65,535 bytes for every other
-  frame, for which Teltonika states no limit. A header
-  declaring more is rejected before its frame is buffered, so a peer can't
-  make a server hold more than that for one frame.
+- An IMEI can be any ASCII text of the declared length, over TCP and UDP. Real
+  IMEIs are 15 digits. Check that yourself if you need it.
+- In a UDP datagram, the byte after the packet ID is not checked. The
+  documentation sets it to `0x01` only in acknowledgments. 0.1 rejected other
+  values.
+- Codec 12 commands (`0x05`) are decoded as well as responses (`0x06`). 0.1
+  accepted only responses.
+- The second Codec 12 quantity is not compared with the first. 0.1 required
+  them to be equal.
+- In Codec 8 Extended, "N of Total IO" must equal N1 + N2 + N4 + N8 + NX. This
+  is the number of 1-, 2-, 4-, 8-byte, and variable-length elements, as devices
+  send it.
+- A packet without records is invalid.
+- A frame with an unsupported codec, such as Codec 13, is skipped as invalid.
+  It no longer ends the stream.
+- Frame limits are fixed. Codec 8 and Codec 8 Extended frames can have 1280
+  bytes, as Teltonika documents. Every other frame can have 65,535 bytes.
+  Teltonika states no limit for those frames. A header that declares more is
+  rejected before its frame is buffered, so a peer can't make a server hold
+  more than that for one frame.
 
 ## Serialize
 
-With the `serde` feature, views and owned values serialize to the same
-output, which differs from 0.1: values are kept as sent (for example
-`longitude_raw` and a millisecond `timestamp`), and byte payloads serialize
-as bytes. 0.1 types also implemented `Deserialize`; in 0.3 only
-[`Imei`](crate::protocol::Imei) does, validating its text, since the other
+With the `serde` feature, views and owned values serialize to the same output.
+The output differs from 0.1. Values are kept as sent, for example
+`longitude_raw` and a `timestamp` in milliseconds. Byte payloads serialize as
+bytes.
+
+0.1 types also implemented `Deserialize`. In 0.3 only
+[`Imei`](crate::protocol::Imei) does, and it validates its text. The other
 values can only come from decoding.
