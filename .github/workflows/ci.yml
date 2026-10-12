@@ -27,6 +27,7 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo clippy -p teltonika-simulator --all-targets -- -D warnings
+      - run: cargo clippy -p teltonika-comparison --all-targets -- -D warnings
 
   test:
     strategy:
@@ -41,6 +42,7 @@ jobs:
       - run: cargo test --tests --no-default-features --features alloc --verbose
       - run: cargo test --doc --all-features --verbose
       - run: cargo test -p teltonika-simulator --verbose
+      - run: cargo test -p teltonika-comparison --verbose
 
   msrv:
     runs-on: ubuntu-latest

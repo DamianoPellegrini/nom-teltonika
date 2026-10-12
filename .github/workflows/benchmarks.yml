@@ -15,6 +15,10 @@ jobs:
       - name: Install profiling tools
         run: sudo apt-get update && sudo apt-get install --yes valgrind strace time
       - run: cargo bench --bench decoder -- --output-format bencher | tee benchmark.txt
+      - name: Compare with other parsers and with 0.1.6
+        run: |
+          cargo bench -p teltonika-comparison
+          cargo run --release -p teltonika-comparison | tee comparison.md
       - name: Load test the example servers with simulated devices
         run: |
           cargo build --release --features tokio --example tcp_server_tokio --example udp_server
@@ -40,6 +44,7 @@ jobs:
           name: criterion-benchmark
           path: |
             benchmark.txt
+            comparison.md
             load-tcp.txt
             load-udp.txt
             allocations.txt
