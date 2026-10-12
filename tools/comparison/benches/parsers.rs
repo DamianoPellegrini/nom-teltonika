@@ -1,8 +1,6 @@
-//! Every parser of [`PARSERS`] on every corpus it can decode.
+//! Benchmarks each parser of [`PARSERS`] on each corpus it decodes.
 //!
-//! Each benchmark decodes a whole corpus and adds up its values. Results go
-//! to one Criterion group per corpus; the crate's binary turns them into
-//! tables.
+//! There is one Criterion group for each corpus.
 
 use std::hint::black_box;
 

@@ -1,8 +1,8 @@
 //! Prints the results of `cargo bench -p teltonika-comparison` as Markdown
-//! tables, one per corpus.
+//! tables.
 //!
-//! Reads the medians Criterion stored under `target/criterion`, or under the
-//! directory given as the only argument.
+//! The results are read from `target/criterion`, or from the directory
+//! given as the first argument.
 
 use std::error::Error;
 use std::fs;
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Prints the table of `corpus`: a row per parser that decodes it.
+/// Prints the table of `corpus`, with one row for each parser.
 fn print_table(criterion: &Path, corpus: &Corpus) -> Result<(), Box<dyn Error>> {
     let group = criterion.join(group_name(corpus));
     let baseline = median_seconds(&group, BASELINE_ID)?;
@@ -57,8 +57,8 @@ fn print_table(criterion: &Path, corpus: &Corpus) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// Returns the median time of one pass of `parser_id` over the corpus of
-/// `group`, as Criterion estimated it.
+/// Returns the median time in seconds that Criterion stored for
+/// `parser_id` in `group`.
 fn median_seconds(group: &Path, parser_id: &str) -> Result<f64, Box<dyn Error>> {
     let path = group.join(parser_id).join("new/estimates.json");
     let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;

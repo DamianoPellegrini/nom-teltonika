@@ -7,14 +7,18 @@ use teltonika_avl_protocol::codec8::Codec8Packet;
 
 use crate::Corpus;
 
-/// What a parser found in a corpus.
+/// The counts and the checksum a parser returns for a corpus.
 ///
-/// The checksum is the wrapping sum of every value the parsers represent the
-/// same way: of each record, the timestamp in milliseconds, altitude, angle,
-/// satellites, speed, and event IO ID; of each IO element, the ID and the
-/// value (the sum of its bytes when it is variable-length); of each Codec 12
-/// message, the payload length. Coordinates and priorities are left out:
-/// the parsers convert them to types that don't compare.
+/// The checksum is the wrapping sum of these values:
+///
+/// - For each record, the timestamp in milliseconds, altitude, angle,
+///   satellites, speed, and event IO ID.
+/// - For each IO element, the ID and the value. A variable-length value
+///   counts as the sum of its bytes.
+/// - For each Codec 12 message, the payload length.
+///
+/// Coordinates and priorities are not summed, because the parsers return
+/// them in different types.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Totals {
     /// Frames decoded.
@@ -61,13 +65,14 @@ impl Totals {
     }
 }
 
-/// Returns the sum of `bytes`: the value of a variable-length IO element in
-/// the checksum.
+/// Returns the sum of `bytes`.
 fn sum(bytes: &[u8]) -> u64 {
     bytes.iter().map(|byte| u64::from(*byte)).sum()
 }
 
-/// A parser to compare, in one way of using it.
+/// A parser to benchmark.
+///
+/// A crate has one entry for each way of using it.
 #[derive(Debug, Clone, Copy)]
 pub struct Parser {
     /// A short name, for benchmark IDs.
@@ -78,12 +83,15 @@ pub struct Parser {
     pub output: &'static str,
     /// Whether the parser decodes Codec 8 only.
     pub codec8_only: bool,
-    /// Whether [`decode`](Self::decode) reads every value. Otherwise it
-    /// counts frames and records, and leaves the rest of [`Totals`] at 0.
-    pub reads_values: bool,
-    /// Decodes valid frames back to back and returns what they hold.
+    /// Whether [`decode`](Self::decode) reads every value.
     ///
-    /// Panics on a frame the parser refuses: a corpus holds valid frames.
+    /// If `false`, it only counts frames and records.
+    pub reads_values: bool,
+    /// Decodes consecutive frames and returns their totals.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser returns an error.
     pub decode: fn(&[u8]) -> Totals,
 }
 
@@ -94,31 +102,31 @@ impl Parser {
     }
 }
 
-/// The benchmark ID of the release every result is compared to.
+/// The benchmark ID of the parser the report compares the others to.
 pub const BASELINE_ID: &str = "nom_teltonika_0_1_6";
 
-/// The parsers compared, in the order of the report.
+/// The parsers to benchmark, in the order of the report.
 pub const PARSERS: [Parser; 6] = [
     Parser {
         id: "nom_teltonika_validated",
-        name: "nom-teltonika, this version",
-        output: "Validated views, records counted",
+        name: "nom-teltonika",
+        output: "Views, records counted",
         codec8_only: false,
         reads_values: false,
         decode: current_validated,
     },
     Parser {
         id: "nom_teltonika_views",
-        name: "nom-teltonika, this version",
-        output: "Validated views, every value read",
+        name: "nom-teltonika",
+        output: "Views, every value read",
         codec8_only: false,
         reads_values: true,
         decode: current_views,
     },
     Parser {
         id: "nom_teltonika_owned",
-        name: "nom-teltonika, this version",
-        output: "Owned `Frame`",
+        name: "nom-teltonika",
+        output: "Owned",
         codec8_only: false,
         reads_values: true,
         decode: current_owned,
@@ -126,7 +134,7 @@ pub const PARSERS: [Parser; 6] = [
     Parser {
         id: BASELINE_ID,
         name: "nom-teltonika 0.1.6",
-        output: "Owned `TeltonikaFrame`",
+        output: "Owned",
         codec8_only: false,
         reads_values: true,
         decode: nom_teltonika_0_1_6,
@@ -134,7 +142,7 @@ pub const PARSERS: [Parser; 6] = [
     Parser {
         id: "teltonika_rs_0_1_1",
         name: "teltonika-rs 0.1.1",
-        output: "Owned `TeltonikaCodec8`",
+        output: "Owned",
         codec8_only: true,
         reads_values: true,
         decode: teltonika_rs,
@@ -142,15 +150,14 @@ pub const PARSERS: [Parser; 6] = [
     Parser {
         id: "teltonika_avl_protocol_0_1_0",
         name: "teltonika-avl-protocol 0.1.0",
-        output: "Fixed-capacity `Codec8Packet`",
+        output: "Fixed capacity",
         codec8_only: true,
         reads_values: true,
         decode: teltonika_avl_protocol,
     },
 ];
 
-/// Validates each frame and counts its records: what a server does before
-/// it stores the bytes or forwards them.
+/// Validates each frame and counts its records, without reading values.
 fn current_validated(mut input: &[u8]) -> Totals {
     let mut totals = Totals::default();
     while !input.is_empty() {
@@ -170,8 +177,7 @@ fn current_views(mut input: &[u8]) -> Totals {
             FrameView::Avl(packet) => {
                 for record in packet.records() {
                     let gps = record.gps();
-                    // The other parsers convert the coordinates while
-                    // decoding; a view reads them only if asked.
+                    // The other parsers always convert the coordinates.
                     black_box((gps.longitude_raw, gps.latitude_raw));
                     totals.record(
                         record.timestamp().into(),

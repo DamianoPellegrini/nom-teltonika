@@ -1,30 +1,24 @@
-//! Benchmarks of `nom-teltonika` against other Teltonika parsers and its own
-//! 0.1.6 release.
+//! Benchmarks of `nom-teltonika` against its 0.1.6 release and other
+//! Teltonika parsers.
 //!
-//! Every parser gets the same job on the same bytes: decode frames sent back
-//! to back, as a TCP connection delivers them, and add up what they hold
-//! into [`Totals`]. A parser is one entry of [`PARSERS`]: a function from the
-//! bytes to the totals, written against that parser's own API. The totals
-//! make the parsers comparable in two ways: the tests check that all of them
-//! found the same values, and a parser can't skip a field that ends up in a
-//! sum.
+//! Each parser in [`PARSERS`] decodes the same frames and sums the values it
+//! reads into [`Totals`]. The tests check that every parser returns the same
+//! totals.
 //!
-//! The bytes come from a [`Corpus`], built from the simulator's vehicles, so
-//! records carry what an FMB003 sends. Two of the parsers compared decode
-//! Codec 8 only, and one holds at most 4 records per packet: the Codec 8
-//! corpus stays within both limits, and the mixed one is decoded by the
-//! parsers that can.
+//! The frames come from a [`Corpus`], built with the simulator.
+//! `teltonika-rs` and `teltonika-avl-protocol` decode Codec 8 only, so they
+//! run on the Codec 8 corpus alone.
 //!
-//! To compare another parser, add its function and its entry to
-//! [`PARSERS`]: the benchmark, the tests, and the report pick it up.
+//! To compare another parser, add an entry to [`PARSERS`].
+//!
+//! # Running
 //!
 //! ```sh
 //! cargo bench -p teltonika-comparison
 //! cargo run --release -p teltonika-comparison
 //! ```
 //!
-//! The first command measures; the second prints the results as Markdown
-//! tables, from what Criterion stored.
+//! The second command prints the results as Markdown tables.
 
 mod corpus;
 mod parsers;
@@ -32,12 +26,14 @@ mod parsers;
 pub use corpus::Corpus;
 pub use parsers::{BASELINE_ID, PARSERS, Parser, Totals};
 
-/// Bytes of traffic in a benchmarked corpus: more than any cache holds, so
-/// the result is what a server sustains.
+/// The length in bytes of a benchmarked corpus.
+///
+/// It is larger than the CPU caches.
 pub const CORPUS_LEN: usize = 64 * 1024 * 1024;
 
-/// Returns the Criterion group of `corpus`, which is also its directory
-/// under `target/criterion`.
+/// Returns the name of the Criterion group of `corpus`.
+///
+/// Criterion stores the results in a directory of this name.
 pub fn group_name(corpus: &Corpus) -> String {
     format!("comparison_{}", corpus.name)
 }

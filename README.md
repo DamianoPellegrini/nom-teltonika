@@ -90,11 +90,10 @@ protocol in a way worth knowing.
 
 ## Performance
 
-One thread decodes about 18 million records per second, CRC check and
-validation included, and the stream wrapper costs about 3% on top. Medians of
-`cargo bench --bench decoder -- bulk` on an Apple M1 Pro with Rust 1.98, over
-64 MiB of mixed traffic (58,697 frames of every codec, 726,551 records of 5
-or 22 IO elements):
+Measured on one thread of an Apple M1 Pro with Rust 1.98, over 64 MiB of
+frames. Numbers depend on the machine.
+
+`cargo bench --bench decoder -- bulk`, on frames of every codec:
 
 | Operation | Throughput | Records per second |
 | --- | --- | --- |
@@ -105,41 +104,33 @@ or 22 IO elements):
 | Decode UDP datagrams, which have no CRC | 6.0 GiB/s | |
 | Encode | 1.0 GiB/s | |
 
-Numbers depend on the machine: run the benchmark to compare.
+### Compared with 0.1.6 and other parsers
 
-### Against 0.1.6 and other parsers
-
-`tools/comparison` gives every parser the same frames and the same job:
-decode them and add up the values they hold, so no field can be skipped.
-Medians of `cargo bench -p teltonika-comparison` on the same machine, over
-64 MiB of Codec 8 frames of 1 to 4 records, which is what every parser here
-can decode (235,471 frames, 588,676 records of 22 IO elements):
+`cargo bench -p teltonika-comparison`, on Codec 8 frames of 1 to 4 records.
+The other two crates decode only those.
 
 | Parser | Output | Throughput | Records per second | Against 0.1.6 |
 | --- | --- | --- | --- | --- |
-| nom-teltonika, this version | Validated views, records counted | 2.0 GiB/s | 18.9 million | 13.4× |
-| nom-teltonika, this version | Validated views, every value read | 736 MiB/s | 6.8 million | 4.8× |
-| nom-teltonika, this version | Owned `Frame` | 386 MiB/s | 3.6 million | 2.5× |
-| nom-teltonika 0.1.6 | Owned `TeltonikaFrame` | 153 MiB/s | 1.4 million | 1× |
-| teltonika-rs 0.1.1 | Owned `TeltonikaCodec8` | 246 MiB/s | 2.3 million | 1.6× |
-| teltonika-avl-protocol 0.1.0 | Fixed-capacity `Codec8Packet` | 113 MiB/s | 1.0 million | 0.7× |
+| nom-teltonika | Views, records counted | 2.0 GiB/s | 18.9 million | 13.4× |
+| nom-teltonika | Views, every value read | 736 MiB/s | 6.8 million | 4.8× |
+| nom-teltonika | Owned | 386 MiB/s | 3.6 million | 2.5× |
+| nom-teltonika 0.1.6 | Owned | 153 MiB/s | 1.4 million | 1× |
+| teltonika-rs 0.1.1 | Owned | 246 MiB/s | 2.3 million | 1.6× |
+| teltonika-avl-protocol 0.1.0 | Fixed capacity | 113 MiB/s | 1.0 million | 0.7× |
 
-The first row validates the frames and counts their records without reading
-the values. teltonika-rs returns a frame whose CRC doesn't match, after
-printing a message; the other parsers refuse it.
+teltonika-rs prints a message when the CRC is wrong and returns the frame
+anyway. The other parsers return an error.
 
-Over 64 MiB of every codec (Codec 8, 8 Extended, and 16 frames of 1 to 32
-records, with Codec 12 responses), which only nom-teltonika decodes:
+On frames of every codec:
 
 | Parser | Output | Throughput | Records per second | Against 0.1.6 |
 | --- | --- | --- | --- | --- |
-| nom-teltonika, this version | Validated views, records counted | 1.7 GiB/s | 14.0 million | 11.3× |
-| nom-teltonika, this version | Validated views, every value read | 762 MiB/s | 6.0 million | 4.9× |
-| nom-teltonika, this version | Owned `Frame` | 475 MiB/s | 3.8 million | 3.0× |
-| nom-teltonika 0.1.6 | Owned `TeltonikaFrame` | 156 MiB/s | 1.2 million | 1× |
+| nom-teltonika | Views, records counted | 1.7 GiB/s | 14.0 million | 11.3× |
+| nom-teltonika | Views, every value read | 762 MiB/s | 6.0 million | 4.9× |
+| nom-teltonika | Owned | 475 MiB/s | 3.8 million | 3.0× |
+| nom-teltonika 0.1.6 | Owned | 156 MiB/s | 1.2 million | 1× |
 
-`cargo run --release -p teltonika-comparison` prints these tables from the
-last benchmark run.
+`cargo run --release -p teltonika-comparison` prints these tables.
 
 ## Testing a server
 
